@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "crates/*",
+]
+resolver = "2"
+
+[workspace.package]
+authors = ["David Cuthbert <dacut@kanga.org>"]
+edition = "2021"
+homepage = "https://github.com/dacut/modular-esp-idf-rs"
+license = "Apache-2.0"
+repository = "https://github.com/dacut/modular-esp-idf-rs.git"
+version = "0.1.0"
