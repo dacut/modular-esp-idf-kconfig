@@ -1,6 +1,7 @@
 //! KConfig parser.
 
 mod block;
+mod comment;
 mod location;
 mod string_literal;
 mod token;
@@ -9,7 +10,7 @@ mod whitespace;
 
 use {
     nom::{
-        combinator::{all_consuming, map},
+        combinator::all_consuming,
         error::VerboseError,
         multi::many0,
         Err as NomErr,
@@ -24,7 +25,7 @@ use {
     },
 };
 
-pub(crate) use {block::*, whitespace::*};
+pub(crate) use {block::*, comment::*, whitespace::*};
 pub use {location::Location, string_literal::parse_string_literal, token::Token, types::Type};
 
 /// A parsed KConfig file.
@@ -35,12 +36,13 @@ pub struct KConfig {
 }
 
 impl KConfig {
-    /// Parse a KConfig file from the given nom input.
+    /// Parse a KConfig file from the given string input.
     pub fn parse_str(input: &str) -> Result<Self, KConfigError> {
-        let result = all_consuming(map(many0(parse_block::<VerboseError<&str>>), |blocks| Self {
+        let (_, blocks) = all_consuming(many0(parse_block::<VerboseError<&str>>))(input)?;
+
+        let result = Self {
             blocks,
-        }))(input)?
-        .1;
+        };
         Ok(result)
     }
 
@@ -119,5 +121,28 @@ impl Display for KConfigErrorKind {
             Self::Io(e) => write!(f, "I/O error: {}", e),
             Self::Parse(e) => write!(f, "Parse error: {}", e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KConfig;
+
+
+
+    #[test]
+    fn kconfig_comments_blank_lines() {
+        let kconfig = KConfig::parse_str(
+            r##"mainmenu "Hello, world!"
+
+    source "/tmp/myfile"
+
+    # Read the next file
+    source "/tmp/myfile2"
+"##,
+        )
+        .unwrap();
+
+        assert_eq!(kconfig.blocks.len(), 3);
     }
 }
