@@ -10,10 +10,9 @@
 //! * A unicode escape sequence of the form `\\u{[0-9a-fA-F]{1,6}}`.
 
 use {
-    crate::parser::{Location, Span},
     nom::{
         branch::alt,
-        bytes::complete::{is_not, take_while_m_n},
+        bytes::complete::{is_not, tag, take_while_m_n},
         character::streaming::{char, multispace1},
         combinator::{map, map_opt, map_res, value, verify},
         error::{FromExternalError, ParseError},
@@ -21,21 +20,10 @@ use {
         sequence::{delimited, preceded},
         IResult, Parser,
     },
+    std::num::ParseIntError,
 };
 
-#[derive(Clone, Debug)]
-pub struct StringLiteral {
-    pub value: String,
-    pub location: Location,
-}
-
-impl AsRef<str> for StringLiteral {
-    fn as_ref(&self) -> &str {
-        &self.value
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum StringFragment<'a> {
     Literal(&'a str),
     EscapedChar(char),
@@ -43,19 +31,16 @@ enum StringFragment<'a> {
 }
 
 /// Parse a string literal.
-pub fn parse_string_literal<'a, E>(input: Span<'a>) -> IResult<Span<'a>, StringLiteral, E>
+pub fn parse_string_literal<'a, E>(input: &'a str) -> IResult<&'a str, String, E>
 where
-    E: ParseError<Span<'a>> + ParseError<&'a str> + FromExternalError<Span<'a>, std::num::ParseIntError>,
+    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
 {
-    let location = (&input).into();
-    let quote_pos = input.fragment().find('"').unwrap_or_else(|| input.len());
-
     // Run the fragment parser in a loop, building the output value onto an initially empty string.
     let build_string = fold_many0(
         // Our parser function– parses a single string fragment
         parse_fragment,
         // Our init value, an empty string
-        move || String::with_capacity(quote_pos),
+        String::new,
         // Our folding function. For each fragment, append the fragment to the
         // string.
         |mut string, fragment| {
@@ -69,26 +54,18 @@ where
     );
 
     // Finally, parse the delimited string.
-    delimited(char('"'), build_string, char('"')).parse(input).map(|(rest, value)| {
-        (
-            rest,
-            StringLiteral {
-                value,
-                location,
-            },
-        )
-    })
+    delimited(tag("\""), build_string, tag("\"")).parse(input)
 }
 
 /// Parse a single character in the string. This dispatches to the appropriate handler based on the input.
-fn parse_fragment<'a, E>(input: Span<'a>) -> IResult<Span<'a>, StringFragment<'a>, E>
+fn parse_fragment<'a, E>(input: &'a str) -> IResult<&'a str, StringFragment<'a>, E>
 where
-    E: ParseError<Span<'a>> + ParseError<&'a str> + FromExternalError<Span<'a>, std::num::ParseIntError>,
+    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
 {
     alt((
         // The `map` combinator runs a parser, then applies a function to the output
         // of that parser.
-        map(parse_literal, |span| StringFragment::Literal(span.fragment())),
+        map(parse_literal, StringFragment::Literal),
         map(parse_escaped_char, StringFragment::EscapedChar),
         value(StringFragment::EscapedWS, parse_escaped_whitespace),
     ))
@@ -96,9 +73,9 @@ where
 }
 
 /// Parse a non-empty block of text that doesn't include \ or "
-fn parse_literal<'a, E>(input: Span<'a>) -> IResult<Span<'a>, Span<'a>, E>
+fn parse_literal<'a, E>(input: &'a str) -> IResult<&'a str, &'a str, E>
 where
-    E: ParseError<Span<'a>>,
+    E: ParseError<&'a str>,
 {
     // `is_not` parses a string of 0 or more characters that aren't one of the
     // given characters.
@@ -108,13 +85,13 @@ where
     // the parser. The verification function accepts out output only if it
     // returns true. In this case, we want to ensure that the output of is_not
     // is non-empty.
-    verify(not_quote_slash, |s: &Span<'a>| !s.fragment().is_empty()).parse(input)
+    verify(not_quote_slash, |s: &str| !s.is_empty()).parse(input)
 }
 
 /// Parse an escaped character: \n, \t, \r, \u{00AC}, etc.
-fn parse_escaped_char<'a, E>(input: Span<'a>) -> IResult<Span<'a>, char, E>
+fn parse_escaped_char<'a, E>(input: &'a str) -> IResult<&'a str, char, E>
 where
-    E: ParseError<Span<'a>> + FromExternalError<Span<'a>, std::num::ParseIntError>,
+    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
 {
     preceded(
         char('\\'),
@@ -145,17 +122,17 @@ where
 
 /// Parse a backslash, followed by any amount of whitespace. This is used later
 /// to discard any escaped whitespace.
-fn parse_escaped_whitespace<'a, E>(input: Span<'a>) -> IResult<Span<'a>, Span<'a>, E>
+fn parse_escaped_whitespace<'a, E>(input: &'a str) -> IResult<&'a str, (), E>
 where
-    E: ParseError<Span<'a>>,
+    E: ParseError<&'a str>,
 {
-    preceded(char('\\'), multispace1).parse(input)
+    value((), preceded(char('\\'), multispace1)).parse(input)
 }
 
 /// Parse a unicode sequence, of the form u{XXXX}, where XXXX is 1 to 6 hexadecimal numerals.
-fn parse_unicode<'a, E>(input: Span<'a>) -> IResult<Span<'a>, char, E>
+fn parse_unicode<'a, E>(input: &'a str) -> IResult<&'a str, char, E>
 where
-    E: ParseError<Span<'a>> + FromExternalError<Span<'a>, std::num::ParseIntError>,
+    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
 {
     // parse_hex takes 1-6 hex digits.
     let parse_hex = take_while_m_n(1, 6, |c: char| c.is_ascii_hexdigit());
@@ -164,58 +141,37 @@ where
     let parse_delimited_hex = preceded(char::<_, E>('u'), delimited(char('{'), parse_hex, char('}')));
 
     // parse_u32 maps the result of parse_delimited_hex to a u32.
-    let parse_u32 = map_res(parse_delimited_hex, move |hex| u32::from_str_radix(hex.fragment(), 16));
+    let parse_u32 = map_res(parse_delimited_hex, move |hex| u32::from_str_radix(hex, 16));
 
-    // map_opt is like map_res, but it takes an Option instead of a Result. If
-    // the function returns None, map_opt returns an error. In this case, because
-    // not all u32 values are valid unicode code points, we have to fallibly
-    // convert to char with from_u32.
-    map_opt(parse_u32, std::char::from_u32).parse(input)
+    // Try to convert from u32 to char. This can fail if the u32 is not a valid Unicode codepoint, so map_opt
+    // is used to return an error.
+    map_opt(parse_u32, char::from_u32).parse(input)
 }
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::parse_string_literal,
-        crate::parser::{Location, Span},
-        std::path::PathBuf,
-    };
-
-    fn span(s: &str) -> Span<'_> {
-        Span::new_extra(s, PathBuf::from("myfile"))
-    }
+    use super::parse_string_literal;
 
     #[test]
     fn test_parse_string_literal() {
-        let location = Location {
-            filename: "myfile".into(),
-            line: 1,
-            column: 1,
-        };
+        let (rest, value) = parse_string_literal::<'_, ()>(r#""Hello, world!""#).unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(value, "Hello, world!");
 
-        let (rest, value) = parse_string_literal::<'_, ()>(span(r#""Hello, world!""#)).unwrap();
-        assert_eq!(*rest.fragment(), "");
-        assert_eq!(value.value, "Hello, world!");
-        assert_eq!(value.location, location);
+        let (rest, value) = parse_string_literal::<'_, ()>(r#""Hello, \"world\"!""#).unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(value, "Hello, \"world\"!");
 
-        let (rest, value) = parse_string_literal::<'_, ()>(span(r#""Hello, \"world\"!""#)).unwrap();
-        assert_eq!(*rest.fragment(), "");
-        assert_eq!(value.value, "Hello, \"world\"!");
-        assert_eq!(value.location, location);
+        let (rest, value) = parse_string_literal::<'_, ()>(r#""Hello, \nworld!""#).unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(value, "Hello, \nworld!");
 
-        let (rest, value) = parse_string_literal::<'_, ()>(span(r#""Hello, \nworld!""#)).unwrap();
-        assert_eq!(*rest.fragment(), "");
-        assert_eq!(value.value, "Hello, \nworld!");
-        assert_eq!(value.location, location);
+        let (rest, value) = parse_string_literal::<'_, ()>(r#""Hello, \nworld!""#).unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(value, "Hello, \nworld!");
 
-        let (rest, value) = parse_string_literal::<'_, ()>(span(r#""Hello, \nworld!""#)).unwrap();
-        assert_eq!(*rest.fragment(), "");
-        assert_eq!(value.value, "Hello, \nworld!");
-        assert_eq!(value.location, location);
-
-        let (rest, value) = parse_string_literal::<'_, ()>(span(r#""Hello, \u{1F600}world!""#)).unwrap();
-        assert_eq!(*rest.fragment(), "");
-        assert_eq!(value.value, "Hello, 😀world!");
-        assert_eq!(value.location, location);
+        let (rest, value) = parse_string_literal::<'_, ()>(r#""Hello, \u{1F600}world!""#).unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(value, "Hello, 😀world!");
     }
 }
