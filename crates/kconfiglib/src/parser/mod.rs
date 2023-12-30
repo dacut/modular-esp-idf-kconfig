@@ -2,6 +2,7 @@
 
 mod block;
 mod comment;
+mod expr;
 mod location;
 mod string_literal;
 mod token;
@@ -9,12 +10,7 @@ mod types;
 mod whitespace;
 
 use {
-    nom::{
-        combinator::all_consuming,
-        error::VerboseError,
-        multi::many0,
-        Err as NomErr,
-    },
+    nom::{combinator::all_consuming, error::VerboseError, multi::many0, Err as NomErr},
     std::{
         backtrace::Backtrace,
         error::Error,
@@ -26,7 +22,13 @@ use {
 };
 
 pub(crate) use {block::*, comment::*, whitespace::*};
-pub use {location::Location, string_literal::parse_string_literal, token::Token, types::Type};
+pub use {
+    expr::{Expr, ExprTerm, parse_expr},
+    location::Location,
+    string_literal::parse_string_literal,
+    token::Token,
+    types::Type,
+};
 
 /// A parsed KConfig file.
 #[derive(Debug, Default)]
@@ -127,8 +129,6 @@ impl Display for KConfigErrorKind {
 #[cfg(test)]
 mod tests {
     use super::KConfig;
-
-
 
     #[test]
     fn kconfig_comments_blank_lines() {

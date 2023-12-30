@@ -1,5 +1,5 @@
 use {
-    crate::parser::{eol, hws1, parse_string_literal, ws0},
+    crate::parser::{eol, hws1, parse_string_literal, ws0, Expr, ExprTerm, Type},
     nom::{
         branch::alt,
         bytes::complete::tag,
@@ -20,6 +20,35 @@ pub enum Block {
     Menu,
     MenuConfig,
     Source(Source),
+}
+
+/// Configuration entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Config {
+    pub symbol: String,
+    pub r#type: Type,
+    pub prompt: (String, Option<Expr>),
+    pub defaults: Vec<ConfigDefault>,
+    pub depends_on: Vec<Expr>,
+    pub selects: Vec<(String, Option<Expr>)>,
+    pub implies: Vec<(String, Option<Expr>)>,
+    pub ranges: Vec<ConfigRange>,
+    pub help: Option<String>,
+}
+
+/// Possible default for a configuration entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigDefault {
+    pub value: String,
+    pub condition: Option<Expr>,
+}
+
+/// Range for a configuration entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigRange {
+    pub start: ExprTerm,
+    pub end: ExprTerm,
+    pub condition: Option<Expr>,
 }
 
 /// Source block type.
