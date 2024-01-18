@@ -1,200 +1,251 @@
 use {
-    crate::parser::{eol, hws1, parse_string_literal, ws0, Expr, ExprTerm, Type},
-    nom::{
-        branch::alt,
-        bytes::complete::tag,
-        combinator::{map, value},
-        error::{FromExternalError, ParseError},
-        sequence::{separated_pair, preceded, terminated},
-        IResult,
+    crate::parser::{
+        Choice, Config, Context, Expected, Expr, KConfigError, Located, Menu, PeekableTokenLines, Source, Token,
+        TokenLine,
     },
-    std::{num::ParseIntError, path::PathBuf},
+    std::path::Path,
 };
 
-/// A Kconfig block.
+/// A block in a Kconfig file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Block {
-    Choice,
-    Config,
-    Mainmenu(String),
-    Menu,
-    MenuConfig,
+    /// Choice of configuration entries.
+    Choice(Choice),
+
+    /// Configuration entry for a symbol.
+    Config(Config),
+
+    /// Conditional inclusion of entries.
+    If(IfBlock),
+
+    /// Main menu title.
+    Mainmenu(Located<String>),
+
+    /// Menu block containing other items visible to the user in a submenu.
+    Menu(Menu),
+
+    /// Configuration entry for a symbol with an attached menu.
+    MenuConfig(Config),
+
+    /// Source another Kconfig file.
     Source(Source),
 }
 
-/// Configuration entry.
+/// A conditional inclusion block.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Config {
-    pub symbol: String,
-    pub r#type: Type,
-    pub prompt: (String, Option<Expr>),
-    pub defaults: Vec<ConfigDefault>,
-    pub depends_on: Vec<Expr>,
-    pub selects: Vec<(String, Option<Expr>)>,
-    pub implies: Vec<(String, Option<Expr>)>,
-    pub ranges: Vec<ConfigRange>,
-    pub help: Option<String>,
+pub struct IfBlock {
+    /// The condition for the block.
+    pub condition: Located<Expr>,
+
+    /// The items in the block.
+    pub items: Vec<Located<Block>>,
 }
 
-/// Possible default for a configuration entry.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ConfigDefault {
-    pub value: String,
-    pub condition: Option<Expr>,
+impl Block {
+    /// Parse the next block from the stream.   
+    pub fn parse(lines: &mut PeekableTokenLines, base_dir: &Path) -> Result<Option<Located<Block>>, KConfigError> {
+        let Some(tokens) = lines.peek() else {
+            return Ok(None);
+        };
+
+        let Some(cmd) = tokens.peek() else {
+            panic!("Expected block command");
+        };
+
+        match cmd.as_ref() {
+            Token::Choice => {
+                let choice = Choice::parse(lines)?;
+                Ok(Some(Located::new(Block::Choice(choice), cmd.location().clone())))
+            }
+
+            Token::Config => {
+                let config = Config::parse(lines)?;
+                Ok(Some(Located::new(Block::Config(config), cmd.location().clone())))
+            }
+
+            Token::If => {
+                let if_block = IfBlock::parse(lines, base_dir)?;
+                Ok(Some(Located::new(Block::If(if_block), cmd.location().clone())))
+            }
+
+            Token::MenuConfig => {
+                let config = Config::parse(lines)?;
+                Ok(Some(Located::new(Block::MenuConfig(config), cmd.location().clone())))
+            }
+
+            Token::Mainmenu => {
+                let mut tokens = lines.next().unwrap();
+                let main_menu = Self::parse_mainmenu(&mut tokens)?;
+                Ok(Some(Located::new(Block::Mainmenu(main_menu), cmd.location().clone())))
+            }
+
+            Token::Menu => {
+                let menu = Menu::parse(lines, base_dir)?;
+                Ok(Some(Located::new(Block::Menu(menu), cmd.location().clone())))
+            }
+
+            Token::Source | Token::OSource | Token::RSource | Token::ORSource => {
+                let mut tokens = lines.next().unwrap();
+                let source = Source::parse(&mut tokens, base_dir)?;
+                Ok(Some(Located::new(Block::Source(source), cmd.location().clone())))
+            }
+
+            _ => todo!("Block not handled: {cmd:?}"),
+        }
+    }
+
+    fn parse_mainmenu(tokens: &mut TokenLine) -> Result<Located<String>, KConfigError> {
+        let (cmd, title) = tokens.read_cmd_str_lit(true)?;
+        assert!(matches!(cmd.as_ref(), Token::Mainmenu));
+        Ok(title)
+    }
 }
 
-/// Range for a configuration entry.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ConfigRange {
-    pub start: ExprTerm,
-    pub end: ExprTerm,
-    pub condition: Option<Expr>,
+/// A trait for blocks that contain other blocks; used to resolve `source` commands and `if` blocks that encompass
+/// other blocks.
+pub trait LocatedBlocks {
+    /// Resolve `source` commands and `if` blocks that encompass other blocks.
+    fn resolve_blocks_recursive<C>(&mut self, base_dir: &Path, context: &C) -> Result<(), KConfigError>
+    where
+        C: Context;
 }
 
-/// Source block type.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Source {
-    pub filename: PathBuf,
-    pub optional: bool,
-    pub relative: bool,
+impl LocatedBlocks for Block {
+    fn resolve_blocks_recursive<C>(&mut self, base_dir: &Path, context: &C) -> Result<(), KConfigError>
+    where
+        C: Context,
+    {
+        if let Block::Menu(m) = self {
+            m.resolve_blocks_recursive(base_dir, context)?;
+        }
+
+        Ok(())
+    }
 }
 
-/// Parse a block from `input`.
-pub(crate) fn parse_block<'a, E>(input: &'a str) -> IResult<&'a str, Block, E>
-where
-    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
-{
-    preceded(ws0, alt((parse_mainmenu, parse_source)))(input)
+impl LocatedBlocks for Vec<Located<Block>> {
+    fn resolve_blocks_recursive<C>(&mut self, base_dir: &Path, context: &C) -> Result<(), KConfigError>
+    where
+        C: Context,
+    {
+        // Change this to extract_if() when https://github.com/rust-lang/rust/issues/43244 is complete.
+        let mut i = 0;
+
+        while i < self.len() {
+            // Can't use a match block here since it will hold onto self[i] and we're removing it.
+            if matches!(self[i].as_ref(), Block::Source(_)) {
+                // Evaluate the source block.
+                let block = self.remove(i);
+                let Block::Source(ref s) = block.as_ref() else {
+                    unreachable!();
+                };
+
+                let blocks = s.evaluate(base_dir, context)?;
+                self.extend(blocks);
+            } else if matches!(self[i].as_ref(), Block::If(_)) {
+                // Evaluate the if block.
+                let block = self.remove(i);
+                let Block::If(i_blk) = block.into_element() else {
+                    unreachable!();
+                };
+
+                let blocks = i_blk.evaluate()?;
+                self.extend(blocks);
+            } else {
+                self[i].as_mut().resolve_blocks_recursive(base_dir, context)?;
+                i += 1;
+            }
+        }
+
+        Ok(())
+    }
 }
 
-/// Parse a `mainmenu` block from `input`.
-pub(crate) fn parse_mainmenu<'a, E>(input: &'a str) -> IResult<&'a str, Block, E>
-where
-    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
-{
-    map(terminated(separated_pair(tag("mainmenu"), hws1, parse_string_literal), eol), |(_, menu)| Block::Mainmenu(menu))(
-        input,
-    )
-}
+impl IfBlock {
+    /// Parse a conditional inclusion block.
+    pub fn parse(lines: &mut PeekableTokenLines, base_dir: &Path) -> Result<Self, KConfigError> {
+        let mut tokens = lines.next().unwrap();
+        assert!(!tokens.is_empty());
 
-/// Parse a `source`, `osource`, `rsource`, or `orsource` block from `input`.
-pub(crate) fn parse_source<'a, E>(input: &'a str) -> IResult<&'a str, Block, E>
-where
-    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
-{
-    map(
-        terminated(
-            separated_pair(
-                alt((
-                    value((false, false), tag("source")),
-                    value((true, false), tag("osource")),
-                    value((false, true), tag("rsource")),
-                    value((true, true), tag("orsource")),
-                )),
-                hws1,
-                parse_string_literal,
-            ),
-            eol,
-        ),
-        |((optional, relative), filename)| {
-            Block::Source(Source {
-                filename: filename.into(),
-                optional,
-                relative,
-            })
-        },
-    )(input)
-}
+        let Some(if_token) = tokens.next() else {
+            panic!("Expected if command");
+        };
+        assert!(matches!(if_token.as_ref(), Token::If));
 
-#[cfg(test)]
-mod tests {
-    use crate::parser::{parse_block, Block, Source};
+        let condition = Expr::parse(if_token.location(), &mut tokens)?;
 
-    #[test]
-    fn plain_mainmenu() {
-        let block = parse_block::<()>(concat!(r#"mainmenu "Hello world!""#, "\n")).unwrap();
-        assert_eq!(block, ("", Block::Mainmenu("Hello world!".into())));
+        if let Some(unexpected) = tokens.next() {
+            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
+        }
+
+        let mut items = Vec::new();
+        let mut last_loc = condition.location().clone();
+
+        loop {
+            let Some(tokens) = lines.peek() else {
+                return Err(KConfigError::unexpected_eof(Expected::EndIf, &last_loc));
+            };
+
+            let Some(cmd) = tokens.peek() else {
+                panic!("Expected if entry");
+            };
+
+            last_loc = cmd.location().clone();
+
+            match cmd.as_ref() {
+                Token::EndIf => {
+                    lines.next();
+                    break;
+                }
+                _ => {
+                    let Some(block) = Block::parse(lines, base_dir)? else {
+                        return Err(KConfigError::unexpected_eof(Expected::EndIf, &last_loc));
+                    };
+
+                    items.push(block);
+                }
+            }
+        }
+
+        Ok(Self {
+            condition,
+            items,
+        })
     }
 
-    #[test]
-    fn mainmenu_with_string_escapes() {
-        let block = parse_block::<()>(concat!(r#"mainmenu "Hello, \"world\"!""#, "\n")).unwrap();
-        assert_eq!(block, ("", Block::Mainmenu("Hello, \"world\"!".into())));
-    }
+    fn evaluate(self) -> Result<Vec<Located<Block>>, KConfigError> {
+        let mut items = Vec::with_capacity(self.items.len());
 
-    #[test]
-    fn mainmenu_with_whitespace() {
-        let block = parse_block::<()>(concat!(r#"    mainmenu "Hello, world!"    "#, "\n")).unwrap();
-        assert_eq!(block, ("", Block::Mainmenu("Hello, world!".into())));
-    }
+        for mut item in self.items.into_iter() {
+            if let Block::If(_) = item.as_ref() {
+                let (if_blk, loc) = item.into_parts();
+                let Block::If(mut if_blk) = if_blk else {
+                    unreachable!();
+                };
 
-    #[test]
-    fn mainmenu_with_eol_continuation() {
-        let block = parse_block::<()>("mainmenu \"Hello, world!\"\\\n    ").unwrap();
-        assert_eq!(block, ("", Block::Mainmenu("Hello, world!".into())));
-    }
+                // Box the conditions so they can be in an AND expression.
+                let cond_a = self.condition.map(|e| Box::new(e.clone()));
+                let cond_b = if_blk.condition.map(|e| Box::new(e.clone()));
 
-    #[test]
-    fn mainmenu_with_comment() {
-        let block = parse_block::<()>(concat!(r#"mainmenu "Hello, world!" #Comment "#, "\n")).unwrap();
-        assert_eq!(block, ("", Block::Mainmenu("Hello, world!".into())));
-    }
+                // Add our condition as an AND with the sub if-block's condition.
+                if_blk.condition = Located::new(Expr::And(cond_a, cond_b), loc);
 
-    #[test]
-    fn valid_source() {
-        let (rest, block) = parse_block::<()>(r#"source "file"  "#,
-        )
-        .unwrap();
-        assert_eq!(rest, "");
-        assert_eq!(
-            block,
-                Block::Source(Source {
-                    filename: "file".into(),
-                    optional: false,
-                    relative: false,
-                })
-        );
-    }
+                // Then evaluate this sub-if block and append the results to our items.
+                let sub_items = if_blk.evaluate()?;
+                items.extend(sub_items);
+            } else {
+                match item.as_mut() {
+                    Block::Choice(c) => c.depends_on.push(self.condition.clone()),
+                    Block::Config(c) => c.depends_on.push(self.condition.clone()),
+                    Block::Menu(m) => m.depends_on.push(self.condition.clone()),
+                    Block::MenuConfig(mc) => mc.depends_on.push(self.condition.clone()),
+                    _ => (),
+                }
 
-    #[test]
-    fn valid_osource() {
-        let (rest, block) = parse_block::<()>(r#"osource "file"  "#).unwrap();
-        assert_eq!(rest, "");
-        assert_eq!(
-            block,
-                Block::Source(Source {
-                    filename: "file".into(),
-                    optional: true,
-                    relative: false,
-                })
-        );
-    }
+                items.push(item);
+            }
+        }
 
-    #[test]
-    fn valid_rsource() {
-        let (rest, block) = parse_block::<()>(r#"rsource "file"  "#).unwrap();
-        assert_eq!(rest, "");
-        assert_eq!(
-            block,
-                Block::Source(Source {
-                    filename: "file".into(),
-                    optional: false,
-                    relative: true,
-                })
-        );
-    }
-
-    #[test]
-    fn valid_orsource() {
-        let (rest, block) = parse_block::<()>(r#"orsource "file"  "#).unwrap();
-        assert_eq!(rest, "");
-        assert_eq!(
-            block,
-                Block::Source(Source {
-                    filename: "file".into(),
-                    optional: true,
-                    relative: true,
-                })
-        );
+        Ok(items)
     }
 }

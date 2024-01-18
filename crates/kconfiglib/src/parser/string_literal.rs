@@ -9,159 +9,170 @@
 //! * A hex escape sequence of the form `\\x[0-9a-fA-F]{2}`.
 //! * A unicode escape sequence of the form `\\u{[0-9a-fA-F]{1,6}}`.
 
-use {
-    nom::{
-        branch::alt,
-        bytes::complete::{is_not, tag, take_while_m_n},
-        character::streaming::{char, multispace1},
-        combinator::{map, map_opt, map_res, value, verify},
-        error::{FromExternalError, ParseError},
-        multi::fold_many0,
-        sequence::{delimited, preceded},
-        IResult,
-    },
-    std::num::ParseIntError,
-};
+use crate::parser::{Expected, KConfigError, PeekableChars};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum StringFragment<'a> {
-    Literal(&'a str),
-    EscapedChar(char),
-    EscapedWS,
+/// Read a string literal.
+pub fn parse_string_literal(chars: &mut PeekableChars, end_token: char) -> Result<String, KConfigError> {
+    let start = chars.location().clone();
+
+    let Some(c) = chars.next() else {
+        return Err(KConfigError::unexpected_eof(end_token, &start));
+    };
+
+    if c != end_token {
+        return Err(KConfigError::unexpected(c, end_token, &start));
+    }
+
+    let mut interior = String::new();
+
+    loop {
+        let Some(c) = chars.next() else {
+            return Err(KConfigError::unexpected_eof(end_token, &start));
+        };
+
+        if c == end_token {
+            break;
+        } else if c == '\\' {
+            parse_escape(chars, &mut interior)?;
+        } else {
+            interior.push(c);
+        }
+    }
+
+    Ok(interior)
 }
 
-/// Parse a string literal.
-pub fn parse_string_literal<'a, E>(input: &'a str) -> IResult<&'a str, String, E>
-where
-    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
-{
-    // Finally, parse the delimited string.
-    delimited(tag("\""), parse_string_literal_interior, tag("\""))(input)
-}
+/// Parse a string escape sequence.
+pub(crate) fn parse_escape(chars: &mut PeekableChars, interior: &mut String) -> Result<(), KConfigError> {
+    let start = chars.location().clone();
 
-/// Parse the interior of a string literal (inside of the double quotes).
-fn parse_string_literal_interior<'a, E>(input: &'a str) -> IResult<&'a str, String, E>
-where
-    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
-{
-    fold_many0(
-        // parse_fragment handles each fragment of the string (escape or regular character)
-        parse_fragment,
-        String::new,
-        |mut string, fragment| {
-            match fragment {
-                StringFragment::Literal(s) => string.push_str(s),
-                StringFragment::EscapedChar(c) => string.push(c),
-                StringFragment::EscapedWS => {}
+    let Some(c) = chars.next() else {
+        return Err(KConfigError::unexpected_eof(Expected::Any, &start));
+    };
+
+    match c {
+        'a' => interior.push('\u{07}'), // alarm (BEL)
+        'b' => interior.push('\u{08}'), // backspace (BS)
+        'e' => interior.push('\u{1B}'), // escape (ESC)
+        'f' => interior.push('\u{0C}'), // form feed (FF)
+        'n' => interior.push('\n'),     // newline (LF)
+        'r' => interior.push('\r'),     // carriage return (CR)
+        't' => interior.push('\t'),     // horizontal tab (TAB)
+        'v' => interior.push('\u{0B}'), // vertical tab (VT)
+        '\\' => interior.push('\\'),    // backslash
+        '\'' => interior.push('\''),    // single quote
+        '/' => interior.push('/'),      // forward slash
+        '"' => interior.push('"'),      // double quote
+        'x' => interior.push(parse_hex_escape(chars)?),
+        'u' => interior.push(parse_unicode_escape(chars)?),
+        c if c.is_whitespace() => {
+            // Consume all whitespace
+            _ = chars.next();
+            loop {
+                let Some(c) = chars.peek() else {
+                    break;
+                };
+
+                if !c.is_whitespace() {
+                    break;
+                }
+
+                _ = chars.next();
             }
-            string
-        },
-    )(input)
+        }
+        c => return Err(KConfigError::unexpected(c, "abefnrtv\\/'\"xu", &start)),
+    }
+    Ok(())
 }
 
-/// Parse a single fragment (escape or run of unescaped characters) in the string.
-fn parse_fragment<'a, E>(input: &'a str) -> IResult<&'a str, StringFragment<'a>, E>
-where
-    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
-{
-    alt((
-        map(parse_literal, StringFragment::Literal),
-        map(parse_escape, StringFragment::EscapedChar),
-        value(StringFragment::EscapedWS, parse_escaped_whitespace),
-    ))(input)
-}
+/// Parse a hex escape sequence, continuing until a non-hex character is found.
+fn parse_hex_escape(chars: &mut PeekableChars) -> Result<char, KConfigError> {
+    let start = chars.location().clone();
+    let mut hex = String::new();
 
-/// Parse a non-empty block of text that doesn't include `\\`, `"`, or a newline.
-fn parse_literal<'a, E>(input: &'a str) -> IResult<&'a str, &'a str, E>
-where
-    E: ParseError<&'a str>,
-{
-    let not_end = is_not("\"\\\n");
-    verify(not_end, |s: &str| !s.is_empty())(input)
-}
+    let Some(c) = chars.next() else {
+        return Err(KConfigError::unexpected_eof(Expected::HexDigit, &start));
+    };
 
-/// Parse an escape sequence other than escaped newlines: \n, \t, \r, \u{00AC}, etc.
-fn parse_escape<'a, E>(input: &'a str) -> IResult<&'a str, char, E>
-where
-    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
-{
-    preceded(
-        char('\\'),
-        alt((
-            parse_unicode,
-            value('\u{07}', char('a')), // alarm (BEL)
-            value('\u{08}', char('b')), // backspace (BS)
-            value('\u{1B}', char('e')), // escape (ESC)
-            value('\u{0C}', char('f')), // form feed (FF)
-            value('\n', char('n')),     // newline (LF)
-            value('\r', char('r')),     // carriage return (CR)
-            value('\t', char('t')),     // horizontal tab (TAB)
-            value('\u{0B}', char('v')), // vertical tab (VT)
-            value('\\', char('\\')),    // backslash
-            value('\'', char('\'')),    // single quote
-            value('/', char('/')),      // forward slash
-            value('"', char('"')),      // double quote
-        )),
-    )(input)
-}
-
-/// Parse a backslash, followed by any amount of whitespace. This is used later
-/// to discard any escaped whitespace.
-fn parse_escaped_whitespace<'a, E>(input: &'a str) -> IResult<&'a str, (), E>
-where
-    E: ParseError<&'a str>,
-{
-    value((), preceded(char('\\'), multispace1))(input)
-}
-
-/// Parse a unicode sequence, of the form u{XXXX}, where XXXX is 1 to 6 hexadecimal numerals.
-fn parse_unicode<'a, E>(input: &'a str) -> IResult<&'a str, char, E>
-where
-    E: ParseError<&'a str> + FromExternalError<&'a str, ParseIntError>,
-{
-    // parse_hex takes 1-6 hex digits.
-    let parse_hex = take_while_m_n(1, 6, |c: char| c.is_ascii_hexdigit());
-
-    // parse_delimited_hex takes a u, {, parse_hex, and }.
-    let parse_delimited_hex = preceded(char::<_, E>('u'), delimited(char('{'), parse_hex, char('}')));
-
-    // parse_u32 maps the result of parse_delimited_hex to a u32.
-    let parse_u32 = map_res(parse_delimited_hex, move |hex| u32::from_str_radix(hex, 16));
-
-    // Try to convert from u32 to char. This can fail if the u32 is not a valid Unicode codepoint, so map_opt
-    // is used to return an error.
-    map_opt(parse_u32, char::from_u32)(input)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_string_literal;
-
-    #[test]
-    fn string_literal_basic() {
-        let (rest, value) = parse_string_literal::<'_, ()>(r#""Hello, world!""#).unwrap();
-        assert_eq!(rest, "");
-        assert_eq!(value, "Hello, world!");
+    if !c.is_ascii_hexdigit() {
+        return Err(KConfigError::unexpected(c, Expected::HexDigit, &start));
     }
 
-    #[test]
-    fn string_literal_escaped_quotes() {
-        let (rest, value) = parse_string_literal::<'_, ()>(r#""Hello, \"world\"!""#).unwrap();
-        assert_eq!(rest, "");
-        assert_eq!(value, "Hello, \"world\"!");
+    loop {
+        let Some(c) = chars.peek() else {
+            return Err(KConfigError::unexpected_eof(Expected::Any, &start));
+        };
+
+        if !c.is_ascii_hexdigit() {
+            break;
+        }
+
+        _ = chars.next();
+        hex.push(c);
     }
 
-    #[test]
-    fn string_literal_escaped_newline() {
-        let (rest, value) = parse_string_literal::<'_, ()>(r#""Hello, \nworld!""#).unwrap();
-        assert_eq!(rest, "");
-        assert_eq!(value, "Hello, \nworld!");
+    let value = u32::from_str_radix(&hex, 16).unwrap();
+    let Some(c) = char::from_u32(value) else {
+        return Err(KConfigError::invalid_unicode(value, &start));
+    };
+
+    Ok(c)
+}
+
+/// Parse a unicode escape sequence.
+fn parse_unicode_escape(chars: &mut PeekableChars) -> Result<char, KConfigError> {
+    let start = chars.location().clone();
+    let Some(c) = chars.next() else {
+        return Err(KConfigError::unexpected_eof(Expected::UnicodeEscape, &start));
+    };
+
+    let mut hex = String::new();
+
+    if c == '{' {
+        loop {
+            let Some(c) = chars.next() else {
+                return Err(KConfigError::unexpected_eof(Expected::UnicodeEscape, chars.location()));
+            };
+
+            if c == '}' {
+                break;
+            }
+
+            if !c.is_ascii_hexdigit() {
+                return Err(KConfigError::unexpected(c, Expected::HexDigit, chars.location()));
+            }
+
+            hex.push(c);
+        }
+
+        if hex.is_empty() {
+            return Err(KConfigError::unexpected('}', Expected::HexDigit, chars.location()));
+        }
+    } else if c.is_ascii_hexdigit() {
+        // Get three more hex digits
+        hex.push(c);
+
+        for _ in 0..3 {
+            let current = chars.location().clone();
+
+            let Some(c) = chars.next() else {
+                return Err(KConfigError::unexpected_eof(Expected::HexDigit, &current));
+            };
+
+            if !c.is_ascii_hexdigit() {
+                return Err(KConfigError::unexpected(c, Expected::HexDigit, &current));
+            }
+
+            hex.push(c);
+        }
+    } else {
+        return Err(KConfigError::unexpected(c, Expected::UnicodeEscape, &start));
     }
 
-    #[test]
-    fn string_literal_unicode_escape() {
-        let (rest, value) = parse_string_literal::<'_, ()>(r#""Hello, \u{1F600}world!""#).unwrap();
-        assert_eq!(rest, "");
-        assert_eq!(value, "Hello, 😀world!");
-    }
+    let value = u32::from_str_radix(&hex, 16).unwrap();
+    let Some(c) = char::from_u32(value) else {
+        return Err(KConfigError::invalid_unicode(value, &start));
+    };
+
+    Ok(c)
 }
