@@ -99,6 +99,23 @@ impl<E> Located<E> {
     }
 }
 
+impl<E> Located<Box<E>> {
+    /// Unwraps the located element from the box.
+    #[inline(always)]
+    pub fn into_inner(self) -> Located<E> {
+        Located {
+            element: *self.element,
+            location: self.location,
+        }
+    }
+
+    /// Unwraps the located element from the box and drops the element.
+    #[inline(always)]
+    pub fn into_inner_element(self) -> E {
+        *self.element
+    }
+}
+
 impl<E> Located<Option<E>> {
     /// Transpose a `Located<Option<E>>` into an `Option<Located<E>>`.
     pub fn transpose(self) -> Option<Located<E>> {

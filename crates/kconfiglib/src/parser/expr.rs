@@ -1,6 +1,7 @@
 use {
     crate::parser::{Expected, KConfigError, Located, Location, Token, TokenLine},
     log::trace,
+    std::fmt::{Display, Formatter, Result as FmtResult},
 };
 
 /// An expression in the KConfig language.
@@ -15,23 +16,11 @@ pub enum Expr {
     /// Integer constant (terminal).
     Integer(i64),
 
-    /// Equality comparison.
-    Eq(Located<Box<Expr>>, Located<Box<Expr>>),
+    /// String literal (terminal).
+    String(String),
 
-    /// Inequality comparison.
-    Ne(Located<Box<Expr>>, Located<Box<Expr>>),
-
-    /// Less-than comparison.
-    Lt(Located<Box<Expr>>, Located<Box<Expr>>),
-
-    /// Less-than-or-equal comparison.
-    Le(Located<Box<Expr>>, Located<Box<Expr>>),
-
-    /// Greater-than comparison.
-    Gt(Located<Box<Expr>>, Located<Box<Expr>>),
-
-    /// Greater-than-or-equal comparison.
-    Ge(Located<Box<Expr>>, Located<Box<Expr>>),
+    /// Comparison expression.
+    Cmp(ExprCmpOp, Located<Box<Expr>>, Located<Box<Expr>>),
 
     /// Unary negation.
     Not(Located<Box<Expr>>),
@@ -41,6 +30,28 @@ pub enum Expr {
 
     /// Boolean OR.
     Or(Located<Box<Expr>>, Located<Box<Expr>>),
+}
+
+/// Comparison operator
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExprCmpOp {
+    /// Equals
+    Eq,
+
+    /// Not equals
+    Ne,
+
+    /// Less than
+    Lt,
+
+    /// Less than or equal
+    Le,
+
+    /// Greater than
+    Gt,
+
+    /// Greater than or equal
+    Ge,
 }
 
 impl Expr {
@@ -68,6 +79,7 @@ impl Expr {
         Self::parse_dep_vis(tokens, "visible", Token::If, Expected::If)
     }
 
+    /// The guts of the parsing logic for `depends on <expr>` or `visible if <expr>` lines.
     fn parse_dep_vis(
         tokens: &mut TokenLine,
         statement: &str,
@@ -158,15 +170,17 @@ impl Expr {
         let rhs = Self::parse_top(op.location(), tokens)?;
         let loc = lhs.location().clone();
 
-        match op.as_ref() {
-            Token::Eq => Ok(Located::new(Expr::Eq(lhs.into(), rhs.into()), loc)),
-            Token::Ne => Ok(Located::new(Expr::Ne(lhs.into(), rhs.into()), loc)),
-            Token::Lt => Ok(Located::new(Expr::Lt(lhs.into(), rhs.into()), loc)),
-            Token::Le => Ok(Located::new(Expr::Le(lhs.into(), rhs.into()), loc)),
-            Token::Gt => Ok(Located::new(Expr::Gt(lhs.into(), rhs.into()), loc)),
-            Token::Ge => Ok(Located::new(Expr::Ge(lhs.into(), rhs.into()), loc)),
+        let cmp = match op.as_ref() {
+            Token::Eq => ExprCmpOp::Eq,
+            Token::Ne => ExprCmpOp::Ne,
+            Token::Lt => ExprCmpOp::Lt,
+            Token::Le => ExprCmpOp::Le,
+            Token::Gt => ExprCmpOp::Gt,
+            Token::Ge => ExprCmpOp::Ge,
             _ => unreachable!(),
-        }
+        };
+
+        Ok(Located::new(Expr::Cmp(cmp, lhs.into(), rhs.into()), loc))
     }
 
     /// Parse a unary not expression, or return the underlying terminal expression.
@@ -202,7 +216,7 @@ impl Expr {
             Token::Symbol(s) => Expr::Symbol(s.clone()),
             Token::HexLit(i) => Expr::Hex(*i),
             Token::IntLit(i) => Expr::Integer(*i),
-            Token::StrLit(s) => Expr::Symbol(s.clone()),
+            Token::StrLit(s) => Expr::String(s.clone()),
             Token::LParen => return Self::parse_paren(prev, tokens),
             _ => return Err(KConfigError::unexpected(token.as_ref(), Expected::Expr, token.location())),
         };
@@ -234,6 +248,71 @@ impl Expr {
         }
 
         Ok(result)
+    }
+}
+
+impl Display for Expr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Self::Symbol(s) => write!(f, "{s}"),
+            Self::Hex(i) => write!(f, "0x{i:x}"),
+            Self::Integer(i) => write!(f, "{i}"),
+            Self::String(s) => write!(f, "{s:?}"),
+            Self::Cmp(op, lhs, rhs) => {
+                let lhs = lhs.as_ref();
+                let rhs = rhs.as_ref();
+
+                let lhs = match lhs.as_ref() {
+                    Self::And(_, _) | Self::Or(_, _) => format!("({})", lhs),
+                    _ => format!("{}", lhs),
+                };
+
+                let rhs = match rhs.as_ref() {
+                    Self::And(_, _) | Self::Or(_, _) => format!("({})", rhs),
+                    _ => format!("{}", rhs),
+                };
+
+                write!(f, "{lhs} {op} {rhs}")
+            }
+            Self::Not(expr) => {
+                let expr = expr.as_ref();
+                let expr = match expr.as_ref() {
+                    Self::Cmp(_, _, _) | Self::And(_, _) | Self::Or(_, _) => format!("({})", expr),
+                    _ => format!("{}", expr),
+                };
+                write!(f, "!{expr}")
+            }
+            Self::And(lhs, rhs) => {
+                let lhs = lhs.as_ref();
+                let rhs = rhs.as_ref();
+
+                let lhs = match lhs.as_ref() {
+                    Self::Or(_, _) => format!("({})", lhs),
+                    _ => format!("{}", lhs),
+                };
+
+                let rhs = match rhs.as_ref() {
+                    Self::Or(_, _) => format!("({})", rhs),
+                    _ => format!("{}", rhs),
+                };
+
+                write!(f, "{lhs} && {rhs}")
+            }
+            Self::Or(lhs, rhs) => write!(f, "{} || {}", lhs, rhs),
+        }
+    }
+}
+
+impl Display for ExprCmpOp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Self::Eq => write!(f, "=="),
+            Self::Ne => write!(f, "!="),
+            Self::Lt => write!(f, "<"),
+            Self::Le => write!(f, "<="),
+            Self::Gt => write!(f, ">"),
+            Self::Ge => write!(f, ">="),
+        }
     }
 }
 

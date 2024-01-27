@@ -42,6 +42,60 @@ pub struct IfBlock {
 }
 
 impl Block {
+    /// If this is a choice block, return a reference to it; otherwise, return `None`.
+    #[inline(always)]
+    pub fn as_choice(&self) -> Option<&Choice> {
+        match self {
+            Block::Choice(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// If this is a config block, return a reference to it; otherwise, return `None`.
+    #[inline(always)]
+    pub fn as_config(&self) -> Option<&Config> {
+        match self {
+            Block::Config(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// If this is an if block, return a reference to it; otherwise, return `None`.
+    #[inline(always)]
+    pub fn as_if(&self) -> Option<&IfBlock> {
+        match self {
+            Block::If(i) => Some(i),
+            _ => None,
+        }
+    }
+
+    /// If this is a menu block, return a reference to it; otherwise, return `None`.
+    #[inline(always)]
+    pub fn as_menu(&self) -> Option<&Menu> {
+        match self {
+            Block::Menu(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// If this is a menuconfig block, return a reference to it; otherwise, return `None`.
+    #[inline(always)]
+    pub fn as_menuconfig(&self) -> Option<&Config> {
+        match self {
+            Block::MenuConfig(mc) => Some(mc),
+            _ => None,
+        }
+    }
+
+    /// If this is a source block, return a reference to it; otherwise, return `None`.
+    #[inline(always)]
+    pub fn as_source(&self) -> Option<&Source> {
+        match self {
+            Block::Source(s) => Some(s),
+            _ => None,
+        }
+    }
+
     /// Parse the next block from the stream.   
     pub fn parse(lines: &mut PeekableTokenLines, base_dir: &Path) -> Result<Option<Located<Block>>, KConfigError> {
         let Some(tokens) = lines.peek() else {

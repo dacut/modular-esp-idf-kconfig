@@ -12,7 +12,13 @@ pub struct Config {
     pub r#type: Type,
 
     /// The prompt for this config.
-    pub prompt: Prompt,
+    pub prompt: Option<Prompt>,
+
+    /// Help text for this config.
+    pub help: Option<Located<String>>,
+
+    /// Comments for this config.
+    pub comments: Vec<Located<String>>,
 
     /// Default values for the config.
     pub defaults: Vec<ConfigDefault>,
@@ -31,12 +37,6 @@ pub struct Config {
 
     /// Range of acceptable values for this config.
     pub ranges: Vec<ConfigRange>,
-
-    /// Help text for this config.
-    pub help: Option<Located<String>>,
-
-    /// Comments for this config.
-    pub comments: Vec<Located<String>>,
 }
 
 /// Possible default for a configuration entry.
@@ -204,7 +204,6 @@ impl Config {
         }
 
         let r#type = r#type.unwrap_or(Type::Unknown);
-        let prompt = prompt.unwrap_or(Prompt::new(name.map(ToString::to_string)));
 
         Ok(Self {
             name,

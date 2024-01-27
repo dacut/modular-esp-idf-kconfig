@@ -26,7 +26,7 @@ pub struct Choice {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChoiceDefault {
     /// The target to choose for this default.
-    pub target: String,
+    pub target: Located<String>,
 
     /// An optional condition for this default. If unspecified, this is equivalent to `y` (always true).
     pub condition: Option<Located<Expr>>,
@@ -135,8 +135,6 @@ impl ChoiceDefault {
         } else {
             None
         };
-
-        let target = target.to_string();
 
         Ok(Self {
             target,

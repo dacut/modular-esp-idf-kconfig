@@ -22,25 +22,35 @@ impl KConfig {
         C: Context,
     {
         let filename = filename.as_ref();
-        let mut kconfig = Self::parse_filename(filename, base_dir)?;
-        kconfig.resolve_blocks_recursive(base_dir, context)?;
-        Ok(kconfig)
+        Self::parse_filename(filename, base_dir, context)
     }
 
     /// Parse the given file.
-    pub(crate) fn parse_filename<F>(filename: F, base_dir: &Path) -> Result<Self, KConfigError>
+    pub fn parse_filename<F, C>(filename: F, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
     where
         F: AsRef<Path>,
+        C: Context,
     {
         let filename = filename.as_ref();
         let mut file = File::open(filename)?;
         let mut input = String::new();
         file.read_to_string(&mut input)?;
-        Self::parse_str(PeekableChars::new(input.as_str(), filename.to_string_lossy().as_ref()), base_dir)
+        Self::parse_str(PeekableChars::new(input.as_str(), filename.to_string_lossy().as_ref()), base_dir, context)
     }
 
     /// Parse a KConfig file from the given string input.
-    fn parse_str(input: PeekableChars, base_dir: &Path) -> Result<Self, KConfigError> {
+    pub fn parse_str<C>(input: PeekableChars, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
+    where
+        C: Context,
+    {
+        let mut kconfig = Self::parse_str_raw(input, base_dir)?;
+        kconfig.resolve_blocks_recursive(base_dir, context)?;
+
+        Ok(kconfig)
+    }
+
+    /// Parse a KConfig file from the given string input without resolving any `source` statements.
+    pub(crate) fn parse_str_raw(input: PeekableChars, base_dir: &Path) -> Result<Self, KConfigError> {
         let tokens = parse_stream(input)?;
         let mut lines = tokens.peek_lines();
         let mut blocks = Vec::new();
@@ -77,7 +87,7 @@ mod tests {
 
     #[test]
     fn kconfig_comments_blank_lines() {
-        let kconfig = KConfig::parse_str(
+        let kconfig = KConfig::parse_str_raw(
             PeekableChars::new(
                 r##"mainmenu "Hello, world!"
 
@@ -97,7 +107,7 @@ mod tests {
 
     #[test]
     fn kconfig_menuconfig() {
-        let kconfig = KConfig::parse_str(
+        let kconfig = KConfig::parse_str_raw(
             PeekableChars::new(
                 r##"
     menuconfig FOO
@@ -138,15 +148,7 @@ mod tests {
             esp_idf.join("Kconfigs.projbuild.in").to_str().unwrap().to_string(),
         );
 
-        let kconfig = match KConfig::parse(kconfig_filename, &base_dir, &context) {
-            Ok(kconfig) => kconfig,
-            Err(e) => {
-                for frame in e.backtrace.frames() {
-                    eprintln!("{frame:?}");
-                }
-                panic!("Failed to parse Kconfig: {}", e);
-            }
-        };
+        let kconfig = KConfig::parse(kconfig_filename, &base_dir, &context).unwrap();
         assert!(!kconfig.blocks.is_empty());
     }
 }

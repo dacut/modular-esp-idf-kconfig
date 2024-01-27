@@ -1,8 +1,9 @@
 use {
     crate::parser::{
-        context::context_closure, Block, Context, KConfig, KConfigError, KConfigErrorKind, Located, LocatedBlocks,
+        context::context_closure, Block, Context, KConfig, KConfigError, KConfigErrorKind, Located, PeekableChars,
         Token, TokenLine,
     },
+    log::{debug, error, trace},
     shellexpand::env_with_context,
     std::{
         env::VarError,
@@ -26,6 +27,9 @@ pub struct Source {
     /// The base directory for the source.
     pub base_dir: PathBuf,
 }
+
+/// The URL prefix for an inline source file.
+const INLINE_PREFIX: &str = "inline:";
 
 impl Source {
     /// Parse a source line.
@@ -66,30 +70,30 @@ impl Source {
             }
         };
 
-        let s_filename = self.base_dir.join(s_filename.as_ref());
-        log::debug!(
-            "Vec<Located<Block>>::resolve_blocks_recursive: s_filename={s_filename:?}, optional={}",
-            self.optional
-        );
+        if let Some(source) = s_filename.strip_prefix(INLINE_PREFIX) {
+            // Read the source file from the context.
+            let peek = PeekableChars::new(source, s_filename.as_ref());
+            let s_kconfig = KConfig::parse_str(peek, base_dir, context)?;
+            return Ok(s_kconfig.blocks);
+        }
 
-        match KConfig::parse_filename(&s_filename, base_dir) {
-            Ok(mut s_kconfig) => {
-                s_kconfig.resolve_blocks_recursive(base_dir, context)?;
-                Ok(s_kconfig.blocks)
-            }
+        let s_filename = self.base_dir.join(s_filename.as_ref());
+
+        trace!("Reading source file {s_filename:?}");
+        match KConfig::parse_filename(&s_filename, base_dir, context) {
+            Ok(s_kconfig) => Ok(s_kconfig.blocks),
             Err(e) => {
-                log::error!("got error: {e}");
                 let KConfigErrorKind::Io(io_error) = &e.kind else {
-                    log::error!("Not an I/O error: {e}");
+                    error!("Not an I/O error: {e}");
                     return Err(e);
                 };
 
                 if io_error.kind() != IoErrorKind::NotFound || !self.optional {
-                    log::error!("Got IoError kind: {}", io_error.kind());
+                    error!("Got IoError kind: {}", io_error.kind());
                     return Err(e);
                 }
 
-                log::debug!("Ignoring IoError of NotFound");
+                debug!("Ignoring NotFound error for optional source file: {s_filename:?}");
                 Ok(Vec::new())
             }
         }
