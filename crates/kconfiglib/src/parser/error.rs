@@ -23,57 +23,57 @@ pub struct KConfigError {
 
 impl KConfigError {
     /// Create a new [KConfigError] with the given kind. The backtrace will be captured automatically.
-    pub fn new(kind: KConfigErrorKind, location: &Location) -> Self {
+    pub fn new(kind: KConfigErrorKind, location: Location) -> Self {
         Self {
             kind,
             backtrace: Backtrace::capture(),
-            location: Some(location.clone()),
+            location: Some(location),
         }
     }
 
     /// Create a new [KConfigError] for an invalid environment variable.
-    pub fn invalid_env(var: impl ToString, location: &Location) -> Self {
+    pub fn invalid_env(var: impl ToString, location: Location) -> Self {
         Self::new(KConfigErrorKind::InvalidEnv(var.to_string()), location)
     }
 
     /// Create a new [KConfigError] for an invalid integer literal.
-    pub fn invalid_integer(value: impl ToString, location: &Location) -> Self {
+    pub fn invalid_integer(value: impl ToString, location: Location) -> Self {
         Self::new(KConfigErrorKind::InvalidInteger(value.to_string()), location)
     }
 
     /// Create a new [KConfigError] for an invalid Unicode codepoint.
-    pub fn invalid_unicode(codepoint: u32, location: &Location) -> Self {
+    pub fn invalid_unicode(codepoint: u32, location: Location) -> Self {
         Self::new(KConfigErrorKind::InvalidUnicode(codepoint), location)
     }
 
     /// Create a new [KConfigError] for a missing token.
-    pub fn missing(expected: impl Into<Expected>, location: &Location) -> Self {
+    pub fn missing(expected: impl Into<Expected>, location: Location) -> Self {
         Self::new(KConfigErrorKind::Missing(expected.into()), location)
     }
 
     /// Create a new [KConfigError] for a syntax error.
-    pub fn syntax(e: impl ToString, location: &Location) -> Self {
+    pub fn syntax(e: impl ToString, location: Location) -> Self {
         Self::new(KConfigErrorKind::Syntax(e.to_string()), location)
     }
 
     /// Create a new [KConfigError] for an unexpected character or string.
-    pub fn unexpected(s: impl ToString, expected: impl Into<Expected>, location: &Location) -> Self {
+    pub fn unexpected(s: impl ToString, expected: impl Into<Expected>, location: Location) -> Self {
         Self::new(KConfigErrorKind::Unexpected(s.to_string(), expected.into()), location)
     }
 
     /// Create a new [KConfigError] for an unexpected end-of-file.
-    pub fn unexpected_eof(expected: impl Into<Expected>, location: &Location) -> Self {
+    pub fn unexpected_eof(expected: impl Into<Expected>, location: Location) -> Self {
         Self::new(KConfigErrorKind::UnexpectedEof(expected.into()), location)
     }
 
     /// Create a new [KConfigError] for an unknown environment variable.
-    pub fn unknown_env(var: impl ToString, location: &Location) -> Self {
+    pub fn unknown_env(var: impl ToString, location: Location) -> Self {
         Self::new(KConfigErrorKind::UnknownEnv(var.to_string()), location)
     }
 }
 
 impl Display for KConfigError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         if let Some(loc) = &self.location {
             write!(f, "{}: {}", loc, self.kind)
         } else {
@@ -129,7 +129,7 @@ pub enum KConfigErrorKind {
 }
 
 impl Display for KConfigErrorKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         match self {
             Self::InvalidEnv(var) => write!(f, "Non-Unicode environment variable: {var}"),
             Self::InvalidInteger(value) => write!(f, "Invalid integer literal: {value}"),
@@ -238,7 +238,7 @@ impl Expected {
 }
 
 impl Display for Expected {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         match self {
             Self::Any => f.write_str("any character"),
             Self::BinOp => f.write_str("binary operator"),

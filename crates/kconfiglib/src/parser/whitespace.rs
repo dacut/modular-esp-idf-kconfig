@@ -1,9 +1,6 @@
-use crate::parser::{Expected, KConfigError, PeekableChars};
+use crate::parser::{Expected, KConfigError, Located, PeekableChars};
 
-pub fn parse_hws0<'a, 'b>(chars: &'b mut PeekableChars<'a>) -> Result<&'a str, KConfigError>
-where
-    'a: 'b,
-{
+pub fn parse_hws0<'buf>(chars: &mut PeekableChars<'buf>) -> Result<&'buf str, KConfigError> {
     // Remember where we started.
     let start = chars.offset();
 

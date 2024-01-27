@@ -1,7 +1,7 @@
 use {
     crate::parser::{
-        context::context_closure, Block, Context, KConfig, KConfigError, KConfigErrorKind, Located, PeekableChars,
-        Token, TokenLine,
+        cache_path, context::context_closure, Block, Context, KConfig, KConfigError, KConfigErrorKind, LocString,
+        Located, PeekableChars, TokenLine,
     },
     log::{debug, error, trace},
     shellexpand::env_with_context,
@@ -16,7 +16,7 @@ use {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Source {
     /// The filename/glob pattern to read.
-    pub filename: Located<String>,
+    pub filename: LocString,
 
     /// Whether the source statement is optional (`osource` or `orsource``).
     pub optional: bool,
@@ -36,8 +36,8 @@ impl Source {
     pub fn parse(tokens: &mut TokenLine, base_dir: &Path) -> Result<Self, KConfigError> {
         let (cmd, filename) = tokens.read_cmd_str_lit(true)?;
 
-        let optional = matches!(cmd.as_ref(), Token::OSource | Token::ORSource);
-        let relative = matches!(cmd.as_ref(), Token::RSource | Token::ORSource);
+        let optional = cmd.is_optional_source();
+        let relative = cmd.is_relative_source();
 
         let base_dir = if relative {
             filename.location().filename.parent().unwrap_or_else(|| Path::new("/"))
@@ -55,12 +55,12 @@ impl Source {
     }
 
     /// Evaluate the source directive and return new blocks found.
-    pub fn evaluate<C>(&self, base_dir: &Path, context: &C) -> Result<Vec<Located<Block>>, KConfigError>
+    pub fn evaluate<C>(&self, base_dir: &Path, context: &C) -> Result<Vec<Block>, KConfigError>
     where
         C: Context,
     {
         // Expand any ${ENV} variables in the filename.
-        let s_filename = match env_with_context(self.filename.as_ref().as_str(), context_closure(context)) {
+        let s_filename = match env_with_context(self.filename.as_str(), context_closure(context)) {
             Ok(s) => s,
             Err(e) => {
                 return Err(match e.cause {
@@ -72,15 +72,18 @@ impl Source {
 
         if let Some(source) = s_filename.strip_prefix(INLINE_PREFIX) {
             // Read the source file from the context.
-            let peek = PeekableChars::new(source, s_filename.as_ref());
+            let inline = cache_path(Path::new(INLINE_PREFIX));
+
+            let peek = PeekableChars::new(source, inline);
             let s_kconfig = KConfig::parse_str(peek, base_dir, context)?;
             return Ok(s_kconfig.blocks);
         }
 
         let s_filename = self.base_dir.join(s_filename.as_ref());
+        let s_filename = cache_path(&s_filename);
 
         trace!("Reading source file {s_filename:?}");
-        match KConfig::parse_filename(&s_filename, base_dir, context) {
+        match KConfig::parse_filename(s_filename, base_dir, context) {
             Ok(s_kconfig) => Ok(s_kconfig.blocks),
             Err(e) => {
                 let KConfigErrorKind::Io(io_error) = &e.kind else {

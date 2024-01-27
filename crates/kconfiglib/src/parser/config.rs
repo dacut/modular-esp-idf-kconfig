@@ -1,12 +1,13 @@
 use crate::parser::{
-    Expected, Expr, KConfigError, LitValue, Located, PeekableTokenLines, Prompt, Token, TokenLine, Type,
+    Expected, KConfigError, LocExpr, LocLitValue, LocString, Located, PeekableTokenLines, Prompt, Token, TokenLine,
+    Type,
 };
 
 /// Configuration entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     /// The name of the symbol for this config block.
-    pub name: Located<String>,
+    pub name: LocString,
 
     /// The type of this config block.
     pub r#type: Type,
@@ -15,19 +16,19 @@ pub struct Config {
     pub prompt: Option<Prompt>,
 
     /// Help text for this config.
-    pub help: Option<Located<String>>,
+    pub help: Option<LocString>,
 
     /// Comments for this config.
-    pub comments: Vec<Located<String>>,
+    pub comments: Vec<LocString>,
 
     /// Default values for the config.
     pub defaults: Vec<ConfigDefault>,
 
     /// Environment variable to use as the default for this config.
-    pub env: Option<Located<String>>,
+    pub env: Option<LocString>,
 
     /// Dependencies for this config from `depend on` statements.
-    pub depends_on: Vec<Located<Expr>>,
+    pub depends_on: Vec<LocExpr>,
 
     /// Other configs that are selected by this config.
     pub selects: Vec<ConfigTarget>,
@@ -43,10 +44,10 @@ pub struct Config {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigDefault {
     /// The value of the default.
-    pub value: Located<Expr>,
+    pub value: LocExpr,
 
     /// An optional condition for this default. If unspecified, this is equivalent to `y` (always true).
-    pub condition: Option<Located<Expr>>,
+    pub condition: Option<LocExpr>,
 }
 
 /// The target of a `select` or `imply` statement along with an optional associated condition.
@@ -59,23 +60,23 @@ pub struct ConfigDefault {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigTarget {
     /// The target of this `select` or `imply` statement.
-    pub target: Located<String>,
+    pub target: LocString,
 
     /// An optional condition for this `select` or `imply` statement. If unspecified, this is equivalent to `y` (always true).
-    pub condition: Option<Located<Expr>>,
+    pub condition: Option<LocExpr>,
 }
 
 /// Range for a configuration entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigRange {
     /// The starting value of the range.
-    pub start: Located<LitValue>,
+    pub start: LocLitValue,
 
     /// The ending value of the range.
-    pub end: Located<LitValue>,
+    pub end: LocLitValue,
 
     /// An optional condition for this range. If unspecified, this is equivalent to `y` (always true).
-    pub condition: Option<Located<Expr>>,
+    pub condition: Option<LocExpr>,
 }
 
 impl Config {
@@ -91,7 +92,7 @@ impl Config {
         let (blk_cmd, name) = tokens.read_cmd_sym(true)?;
 
         assert!(
-            matches!(blk_cmd.as_ref(), Token::Config | Token::MenuConfig),
+            matches!(blk_cmd.token, Token::Config | Token::MenuConfig),
             "Expected config or menuconfig: {blk_cmd:?}"
         );
 
@@ -115,7 +116,7 @@ impl Config {
                 panic!("Expected config entry");
             };
 
-            match cmd.as_ref() {
+            match cmd.token {
                 Token::Choice
                 | Token::Config
                 | Token::EndChoice
@@ -137,7 +138,7 @@ impl Config {
                     let mut tokens = lines.next().unwrap();
                     let type_token = tokens.next().unwrap();
 
-                    r#type = Some(type_token.as_ref().r#type().unwrap());
+                    r#type = Some(type_token.r#type().unwrap());
 
                     if !tokens.is_empty() {
                         prompt = Some(Prompt::parse(type_token.location(), &mut tokens)?);
@@ -147,7 +148,7 @@ impl Config {
                 Token::Comment => {
                     let mut tokens = lines.next().unwrap();
                     let (cmd, comment) = tokens.read_cmd_str_lit(true)?;
-                    assert_eq!(cmd.as_ref(), &Token::Comment);
+                    assert_eq!(cmd.token, Token::Comment);
                     comments.push(comment);
                 }
 
@@ -160,7 +161,7 @@ impl Config {
 
                 Token::Depends => {
                     let mut tokens = lines.next().unwrap();
-                    let depends = Expr::parse_depends_on(&mut tokens)?;
+                    let depends = LocExpr::parse_depends_on(&mut tokens)?;
                     depends_on.push(depends);
                 }
 
@@ -220,7 +221,7 @@ impl Config {
         })
     }
 
-    fn parse_option(tokens: &mut TokenLine) -> Result<Located<String>, KConfigError> {
+    fn parse_option(tokens: &mut TokenLine) -> Result<LocString, KConfigError> {
         let Some(cmd) = tokens.next() else {
             panic!("Expected option command");
         };
@@ -229,7 +230,7 @@ impl Config {
             return Err(KConfigError::missing(Expected::Env, cmd.location()));
         };
 
-        if !matches!(env_token.as_ref(), Token::Env) {
+        if env_token.token != Token::Env {
             return Err(KConfigError::unexpected(env_token, Expected::Env, env_token.location()));
         }
 
@@ -237,7 +238,7 @@ impl Config {
             return Err(KConfigError::missing(Expected::Eq, env_token.location()));
         };
 
-        if !matches!(eq_token.as_ref(), Token::Eq) {
+        if eq_token.token != Token::Eq {
             return Err(KConfigError::unexpected(eq_token, Expected::Eq, eq_token.location()));
         }
 
@@ -245,7 +246,7 @@ impl Config {
             return Err(KConfigError::missing(Expected::StringLiteral, eq_token.location()));
         };
 
-        let Some(env_name) = env_name.map(Token::string_literal_value).transpose() else {
+        let Some(env_name) = env_name.string_literal_value() else {
             return Err(KConfigError::unexpected(env_name, Expected::StringLiteral, env_name.location()));
         };
 
@@ -253,7 +254,7 @@ impl Config {
             return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
         }
 
-        Ok(env_name.map(ToString::to_string))
+        Ok(env_name.to_loc_string())
     }
 }
 
@@ -264,14 +265,14 @@ impl ConfigDefault {
             panic!("Expected default command");
         };
 
-        let value = Expr::parse(default_cmd.location(), tokens)?;
+        let value = LocExpr::parse(default_cmd.location(), tokens)?;
 
         let condition = if let Some(if_token) = tokens.next() {
-            if if_token.as_ref() != &Token::If {
+            if if_token.token != Token::If {
                 return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
             }
 
-            let cond = Expr::parse(if_token.location(), tokens)?;
+            let cond = LocExpr::parse(if_token.location(), tokens)?;
 
             if let Some(unexpected) = tokens.next() {
                 return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
@@ -293,12 +294,12 @@ impl ConfigTarget {
     /// Parse the remainder of a `select` or `imply` statement (after the `select` or `imply` keyword).
     pub fn parse(tokens: &mut TokenLine) -> Result<Self, KConfigError> {
         let (cmd, target) = tokens.read_cmd_sym(false)?;
-        assert!(matches!(cmd.as_ref(), Token::Select | Token::Imply));
+        assert!(matches!(cmd.token, Token::Select | Token::Imply));
 
         let condition = tokens.read_if_expr(true)?;
 
         Ok(Self {
-            target: target.into(),
+            target,
             condition,
         })
     }
@@ -315,7 +316,7 @@ impl ConfigRange {
             return Err(KConfigError::missing(Expected::LitValue, range_token.location()));
         };
 
-        let Some(start) = start.map(Token::lit_value).transpose() else {
+        let Some(start) = start.literal_value() else {
             return Err(KConfigError::unexpected(start, Expected::LitValue, start.location()));
         };
 
@@ -323,16 +324,16 @@ impl ConfigRange {
             return Err(KConfigError::missing(Expected::LitValue, range_token.location()));
         };
 
-        let Some(end) = end.map(Token::lit_value).transpose() else {
+        let Some(end) = end.literal_value() else {
             return Err(KConfigError::unexpected(end, Expected::LitValue, end.location()));
         };
 
         let condition = if let Some(if_token) = tokens.next() {
-            if if_token.as_ref() != &Token::If {
+            if if_token.token != Token::If {
                 return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
             }
 
-            Some(Expr::parse(if_token.location(), tokens)?)
+            Some(LocExpr::parse(if_token.location(), tokens)?)
         } else {
             None
         };

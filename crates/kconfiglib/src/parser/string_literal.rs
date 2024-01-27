@@ -9,25 +9,25 @@
 //! * A hex escape sequence of the form `\\x[0-9a-fA-F]{2}`.
 //! * A unicode escape sequence of the form `\\u{[0-9a-fA-F]{1,6}}`.
 
-use crate::parser::{Expected, KConfigError, PeekableChars};
+use crate::parser::{Expected, KConfigError, Located, PeekableChars};
 
 /// Read a string literal.
 pub fn parse_string_literal(chars: &mut PeekableChars, end_token: char) -> Result<String, KConfigError> {
-    let start = chars.location().clone();
+    let start = chars.location();
 
     let Some(c) = chars.next() else {
-        return Err(KConfigError::unexpected_eof(end_token, &start));
+        return Err(KConfigError::unexpected_eof(end_token, start));
     };
 
     if c != end_token {
-        return Err(KConfigError::unexpected(c, end_token, &start));
+        return Err(KConfigError::unexpected(c, end_token, start));
     }
 
     let mut interior = String::new();
 
     loop {
         let Some(c) = chars.next() else {
-            return Err(KConfigError::unexpected_eof(end_token, &start));
+            return Err(KConfigError::unexpected_eof(end_token, start));
         };
 
         if c == end_token {
@@ -44,10 +44,10 @@ pub fn parse_string_literal(chars: &mut PeekableChars, end_token: char) -> Resul
 
 /// Parse a string escape sequence.
 pub(crate) fn parse_escape(chars: &mut PeekableChars, interior: &mut String) -> Result<(), KConfigError> {
-    let start = chars.location().clone();
+    let start = chars.location();
 
     let Some(c) = chars.next() else {
-        return Err(KConfigError::unexpected_eof(Expected::Any, &start));
+        return Err(KConfigError::unexpected_eof(Expected::Any, start));
     };
 
     match c {
@@ -80,27 +80,27 @@ pub(crate) fn parse_escape(chars: &mut PeekableChars, interior: &mut String) -> 
                 _ = chars.next();
             }
         }
-        c => return Err(KConfigError::unexpected(c, "abefnrtv\\/'\"xu", &start)),
+        c => return Err(KConfigError::unexpected(c, "abefnrtv\\/'\"xu", start)),
     }
     Ok(())
 }
 
 /// Parse a hex escape sequence, continuing until a non-hex character is found.
 fn parse_hex_escape(chars: &mut PeekableChars) -> Result<char, KConfigError> {
-    let start = chars.location().clone();
+    let start = chars.location();
     let mut hex = String::new();
 
     let Some(c) = chars.next() else {
-        return Err(KConfigError::unexpected_eof(Expected::HexDigit, &start));
+        return Err(KConfigError::unexpected_eof(Expected::HexDigit, start));
     };
 
     if !c.is_ascii_hexdigit() {
-        return Err(KConfigError::unexpected(c, Expected::HexDigit, &start));
+        return Err(KConfigError::unexpected(c, Expected::HexDigit, start));
     }
 
     loop {
         let Some(c) = chars.peek() else {
-            return Err(KConfigError::unexpected_eof(Expected::Any, &start));
+            return Err(KConfigError::unexpected_eof(Expected::Any, start));
         };
 
         if !c.is_ascii_hexdigit() {
@@ -113,7 +113,7 @@ fn parse_hex_escape(chars: &mut PeekableChars) -> Result<char, KConfigError> {
 
     let value = u32::from_str_radix(&hex, 16).unwrap();
     let Some(c) = char::from_u32(value) else {
-        return Err(KConfigError::invalid_unicode(value, &start));
+        return Err(KConfigError::invalid_unicode(value, start));
     };
 
     Ok(c)
@@ -121,9 +121,9 @@ fn parse_hex_escape(chars: &mut PeekableChars) -> Result<char, KConfigError> {
 
 /// Parse a unicode escape sequence.
 fn parse_unicode_escape(chars: &mut PeekableChars) -> Result<char, KConfigError> {
-    let start = chars.location().clone();
+    let start = chars.location();
     let Some(c) = chars.next() else {
-        return Err(KConfigError::unexpected_eof(Expected::UnicodeEscape, &start));
+        return Err(KConfigError::unexpected_eof(Expected::UnicodeEscape, start));
     };
 
     let mut hex = String::new();
@@ -153,25 +153,25 @@ fn parse_unicode_escape(chars: &mut PeekableChars) -> Result<char, KConfigError>
         hex.push(c);
 
         for _ in 0..3 {
-            let current = chars.location().clone();
+            let current = chars.location();
 
             let Some(c) = chars.next() else {
-                return Err(KConfigError::unexpected_eof(Expected::HexDigit, &current));
+                return Err(KConfigError::unexpected_eof(Expected::HexDigit, current));
             };
 
             if !c.is_ascii_hexdigit() {
-                return Err(KConfigError::unexpected(c, Expected::HexDigit, &current));
+                return Err(KConfigError::unexpected(c, Expected::HexDigit, current));
             }
 
             hex.push(c);
         }
     } else {
-        return Err(KConfigError::unexpected(c, Expected::UnicodeEscape, &start));
+        return Err(KConfigError::unexpected(c, Expected::UnicodeEscape, start));
     }
 
     let value = u32::from_str_radix(&hex, 16).unwrap();
     let Some(c) = char::from_u32(value) else {
-        return Err(KConfigError::invalid_unicode(value, &start));
+        return Err(KConfigError::invalid_unicode(value, start));
     };
 
     Ok(c)

@@ -1,13 +1,22 @@
-use std::{
-    fmt::{Debug, Display, Formatter, Result as FmtResult},
-    path::PathBuf,
+use {
+    once_cell::sync::OnceCell,
+    std::{
+        cmp::{Eq, Ord, PartialEq, PartialOrd},
+        collections::HashMap,
+        fmt::{Debug, Display, Formatter, Result as FmtResult},
+        hash::{Hash, Hasher},
+        ops::{Deref, DerefMut},
+        path::{Path, PathBuf},
+        string::ToString,
+        sync::Mutex,
+    },
 };
 
 /// Location information for items in a Kconfig file.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Location {
     /// The file in which the item is located.
-    pub filename: PathBuf,
+    pub filename: &'static Path,
 
     /// The line number of the item (1-based).
     pub line: usize,
@@ -16,11 +25,32 @@ pub struct Location {
     pub column: usize,
 }
 
+/// A trait for items with location information.
+pub trait Located {
+    /// Get the location of the item.
+    fn location(&self) -> Location;
+}
+
+/// A [`String`] with location information.
+#[derive(Clone)]
+pub struct LocString {
+    value: String,
+    location: Location,
+}
+
+/// A string slice ([`str`]) with location information.
+#[derive(Clone, Copy)]
+pub struct LocStr<'sl> {
+    value: &'sl str,
+    location: Location,
+}
+
 impl Location {
     /// Create a new location from a filename, line number, and column number.
-    pub fn new(filename: impl Into<PathBuf>, line: usize, column: usize) -> Self {
+    #[inline(always)]
+    pub fn new(filename: &Path, line: usize, column: usize) -> Self {
         Self {
-            filename: filename.into(),
+            filename: cache_path(filename),
             line,
             column,
         }
@@ -28,155 +58,224 @@ impl Location {
 }
 
 impl Display for Location {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    #[inline(always)]
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         write!(f, "{} {}:{}", self.filename.display(), self.line, self.column)
     }
 }
 
-/// A located element.
-pub struct Located<E> {
-    /// The element being located.
-    element: E,
-
-    /// The location of the element.
-    location: Location,
-}
-
-impl<E> Located<E> {
-    /// Create a new located element.
-    pub fn new(element: E, location: Location) -> Self {
+impl LocString {
+    /// Create a new [`LocString`] from a [`String`] and a [`Location`].
+    #[inline(always)]
+    pub fn new(value: String, location: Location) -> Self {
         Self {
-            element,
+            value,
             location,
         }
     }
 
-    /// Get the location.
-    pub fn location(&self) -> &Location {
-        &self.location
-    }
-
-    /// Rewraps the location around a method call on a reference to the element.
+    /// Consume this [`LocString`] and return the underlying [`String`].
     #[inline(always)]
-    pub fn map<'a, O>(&'a self, f: impl FnOnce(&'a E) -> O) -> Located<O> {
-        Located {
-            element: f(&self.element),
-            location: self.location.clone(),
-        }
+    pub fn into_inner(self) -> String {
+        self.value
     }
+}
 
-    /// Rewraps the location around a method call on the element itself.
+impl Deref for LocString {
+    type Target = String;
+
     #[inline(always)]
-    pub fn map_into<O>(self, f: impl FnOnce(E) -> O) -> Located<O> {
-        Located {
-            element: f(self.element),
-            location: self.location,
-        }
+    fn deref(&self) -> &Self::Target {
+        &self.value
     }
+}
 
-    /// Converts the element into another type.
+impl DerefMut for LocString {
     #[inline(always)]
-    pub fn into<T>(self) -> Located<T>
-    where
-        T: From<E>,
-    {
-        Located {
-            element: self.element.into(),
-            location: self.location,
-        }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.value
     }
+}
 
-    /// Consumes this located type and returns just the element.
+impl Located for LocString {
     #[inline(always)]
-    pub fn into_element(self) -> E {
-        self.element
+    fn location(&self) -> Location {
+        self.location
     }
+}
 
-    /// Splits this located element into its parts, element and location.
+impl Debug for LocString {
     #[inline(always)]
-    pub fn into_parts(self) -> (E, Location) {
-        (self.element, self.location)
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        write!(f, "{:?}", self.value)
     }
 }
 
-impl<E> Located<Box<E>> {
-    /// Unwraps the located element from the box.
+impl Display for LocString {
     #[inline(always)]
-    pub fn into_inner(self) -> Located<E> {
-        Located {
-            element: *self.element,
-            location: self.location,
-        }
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        write!(f, "{}", self.value)
     }
+}
 
-    /// Unwraps the located element from the box and drops the element.
+impl Eq for LocString {}
+impl PartialEq for LocString {
     #[inline(always)]
-    pub fn into_inner_element(self) -> E {
-        *self.element
-    }
-}
-
-impl<E> Located<Option<E>> {
-    /// Transpose a `Located<Option<E>>` into an `Option<Located<E>>`.
-    pub fn transpose(self) -> Option<Located<E>> {
-        match self.element {
-            Some(element) => Some(Located {
-                element,
-                location: self.location,
-            }),
-            None => None,
-        }
-    }
-}
-
-impl<E> AsMut<E> for Located<E> {
-    fn as_mut(&mut self) -> &mut E {
-        &mut self.element
-    }
-}
-
-impl<E> AsRef<E> for Located<E> {
-    fn as_ref(&self) -> &E {
-        &self.element
-    }
-}
-
-impl<E> Clone for Located<E>
-where
-    E: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            element: self.element.clone(),
-            location: self.location.clone(),
-        }
-    }
-}
-
-impl<E> Debug for Located<E>
-where
-    E: Debug,
-{
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{:?}(at {})", self.element, self.location)
-    }
-}
-
-impl<E> Display for Located<E>
-where
-    E: Display,
-{
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{} (at {})", self.element, self.location)
-    }
-}
-
-impl<E> Eq for Located<E> where E: Eq {}
-impl<E> PartialEq for Located<E>
-where
-    E: PartialEq,
-{
     fn eq(&self, other: &Self) -> bool {
-        self.element == other.element
+        self.value == other.value
     }
+}
+
+impl PartialEq<String> for LocString {
+    #[inline(always)]
+    fn eq(&self, other: &String) -> bool {
+        self.value == *other
+    }
+}
+
+impl Hash for LocString {
+    #[inline(always)]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
+    }
+}
+
+impl Ord for LocString {
+    #[inline(always)]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.value.cmp(&other.value)
+    }
+}
+
+impl PartialOrd for LocString {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialOrd<String> for LocString {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &String) -> Option<std::cmp::Ordering> {
+        self.value.partial_cmp(other)
+    }
+}
+
+impl<'sl> LocStr<'sl> {
+    /// Create a new [`LocStr`] from a string slice and a [`Location`].
+    #[inline(always)]
+    pub fn new(value: &'sl str, location: Location) -> Self {
+        Self {
+            value,
+            location,
+        }
+    }
+
+    /// Consume this [`LocStr`] and return the underlying string slice.
+    #[inline(always)]
+    pub fn into_inner(self) -> &'sl str {
+        self.value
+    }
+
+    /// Convert this into a [`LocString`].
+    pub fn to_loc_string(&self) -> LocString {
+        LocString::new(self.value.to_string(), self.location)
+    }
+}
+
+impl Deref for LocStr<'_> {
+    type Target = str;
+
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+        self.value
+    }
+}
+
+impl Located for LocStr<'_> {
+    #[inline(always)]
+    fn location(&self) -> Location {
+        self.location
+    }
+}
+
+impl Debug for LocStr<'_> {
+    #[inline(always)]
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        Debug::fmt(self.value, f)
+    }
+}
+
+impl Display for LocStr<'_> {
+    #[inline(always)]
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        Display::fmt(self.value, f)
+    }
+}
+
+impl Eq for LocStr<'_> {}
+impl PartialEq for LocStr<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl PartialEq<str> for LocStr<'_> {
+    #[inline(always)]
+    fn eq(&self, other: &str) -> bool {
+        self.value == other
+    }
+}
+
+impl Hash for LocStr<'_> {
+    #[inline(always)]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
+    }
+}
+
+impl Ord for LocStr<'_> {
+    #[inline(always)]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.value.cmp(other.value)
+    }
+}
+
+impl PartialOrd for LocStr<'_> {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialOrd<str> for LocStr<'_> {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &str) -> Option<std::cmp::Ordering> {
+        self.value.partial_cmp(other)
+    }
+}
+
+static PATH_CACHE: OnceCell<Mutex<HashMap<PathBuf, &'static PathBuf>>> = OnceCell::new();
+
+/// Return the cached path for the given path.
+pub fn cache_path<P: Into<PathBuf>>(path: P) -> &'static Path {
+    let map_mutex = PATH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let path = path.into();
+
+    // Get a mutex to the map.
+    let mut map = map_mutex.lock().unwrap();
+
+    // Do we already have an entry for this path?
+    if let Some(ptr) = map.get(&path) {
+        // Yes, return it.
+        return ptr;
+    }
+
+    // No; allocate a new entry. We do this by leaking an allocation on the heap.
+    let ptr = Box::leak(Box::new(path.clone()));
+    map.insert(path, ptr);
+
+    // Return the new entry.
+    ptr
 }

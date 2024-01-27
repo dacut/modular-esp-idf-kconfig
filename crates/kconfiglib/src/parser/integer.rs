@@ -1,4 +1,4 @@
-use crate::parser::{Expected, KConfigError, PeekableChars};
+use crate::parser::{Expected, KConfigError, Located, PeekableChars};
 
 pub fn parse_integer_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError> {
     let start = chars.location();
@@ -22,10 +22,10 @@ pub fn parse_integer_literal(chars: &mut PeekableChars) -> Result<i64, KConfigEr
 
 fn parse_decimal_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError> {
     let mut literal = String::new();
-    let start = chars.location().clone();
+    let start = chars.location();
 
     let Some(c) = chars.peek() else {
-        return Err(KConfigError::unexpected_eof(Expected::IntegerLiteral, &start));
+        return Err(KConfigError::unexpected_eof(Expected::IntegerLiteral, start));
     };
 
     if c == '+' || c == '-' {
@@ -47,25 +47,25 @@ fn parse_decimal_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError>
     }
 
     #[allow(clippy::from_str_radix_10)]
-    i64::from_str_radix(&literal, 10).map_err(|_| KConfigError::invalid_integer(literal, &start))
+    i64::from_str_radix(&literal, 10).map_err(|_| KConfigError::invalid_integer(literal, start))
 }
 
 fn parse_hex_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError> {
     let mut literal = String::new();
-    let start = chars.location().clone();
+    let start = chars.location();
 
     let Some(c) = chars.next() else {
-        return Err(KConfigError::unexpected_eof(Expected::IntegerLiteral, &start));
+        return Err(KConfigError::unexpected_eof(Expected::IntegerLiteral, start));
     };
     if c != '0' {
-        return Err(KConfigError::unexpected(c, Expected::IntegerLiteral, &start));
+        return Err(KConfigError::unexpected(c, Expected::IntegerLiteral, start));
     }
 
     let Some(radix_char) = chars.next() else {
-        return Err(KConfigError::unexpected_eof(Expected::IntegerLiteral, &start));
+        return Err(KConfigError::unexpected_eof(Expected::IntegerLiteral, start));
     };
     if radix_char != 'x' && radix_char != 'X' {
-        return Err(KConfigError::unexpected(c, Expected::IntegerLiteral, &start));
+        return Err(KConfigError::unexpected(c, Expected::IntegerLiteral, start));
     }
 
     loop {
@@ -82,22 +82,22 @@ fn parse_hex_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError> {
     }
 
     if literal.is_empty() {
-        return Err(KConfigError::invalid_integer(format!("0{radix_char}"), &start));
+        return Err(KConfigError::invalid_integer(format!("0{radix_char}"), start));
     }
 
     i64::from_str_radix(&literal, 16)
-        .map_err(|_| KConfigError::invalid_integer(format!("0{radix_char}{literal}"), &start))
+        .map_err(|_| KConfigError::invalid_integer(format!("0{radix_char}{literal}"), start))
 }
 
 fn parse_octal_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError> {
     let mut literal = String::new();
-    let start = chars.location().clone();
+    let start = chars.location();
 
     let Some(c) = chars.peek() else {
-        return Err(KConfigError::unexpected_eof(Expected::IntegerLiteral, &start));
+        return Err(KConfigError::unexpected_eof(Expected::IntegerLiteral, start));
     };
     if c != '0' {
-        return Err(KConfigError::unexpected(c, Expected::IntegerLiteral, &start));
+        return Err(KConfigError::unexpected(c, Expected::IntegerLiteral, start));
     }
 
     loop {
@@ -117,5 +117,5 @@ fn parse_octal_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError> {
         return Ok(0);
     }
 
-    i64::from_str_radix(&literal, 16).map_err(|_| KConfigError::invalid_integer(format!("0{literal}"), &start))
+    i64::from_str_radix(&literal, 16).map_err(|_| KConfigError::invalid_integer(format!("0{literal}"), start))
 }

@@ -1,6 +1,11 @@
-/// A literal value.
+use crate::parser::{Located, Location};
+
+/// Literal value data.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LitValue {
+    /// Hex value
+    Hex(u64),
+
     /// Integer value.
     Int(i64),
 
@@ -12,6 +17,16 @@ pub enum LitValue {
 
     /// Tristate value.
     Tristate(Tristate),
+}
+
+/// A literal value with a location.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocLitValue {
+    /// The literal value.
+    pub value: LitValue,
+
+    /// The location of the literal value.
+    pub location: Location,
 }
 
 /// A tristate value.
@@ -27,6 +42,23 @@ pub enum Tristate {
 
     /// `maybe` tristate value.
     Maybe,
+}
+
+impl LocLitValue {
+    /// Create a new `LocLitValue` from the given literal value and location.
+    #[inline(always)]
+    pub fn new(value: LitValue, location: Location) -> Self {
+        Self {
+            value,
+            location,
+        }
+    }
+}
+
+impl Located for LocLitValue {
+    fn location(&self) -> Location {
+        self.location
+    }
 }
 
 impl From<bool> for Tristate {

@@ -14,7 +14,7 @@ pub enum Type {
 }
 
 impl Display for Type {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         match self {
             Type::Unknown => write!(f, "unknown"),
             Type::Bool => write!(f, "bool"),

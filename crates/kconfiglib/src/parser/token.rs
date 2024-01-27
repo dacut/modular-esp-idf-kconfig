@@ -1,5 +1,7 @@
 use {
-    crate::parser::{Expected, KConfigError, LitValue, Located, PeekableChars, Tristate, Type},
+    crate::parser::{
+        Expected, KConfigError, LitValue, LocLitValue, LocStr, Located, Location, PeekableChars, Tristate, Type,
+    },
     phf::phf_map,
     std::fmt::{Display, Formatter, Result as FmtResult},
 };
@@ -72,27 +74,37 @@ pub enum Token {
     Or,
 }
 
+/// A token with location information.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocToken {
+    /// The token.
+    pub token: Token,
+
+    /// The location of the token.
+    pub location: Location,
+}
+
 impl Token {
     /// Indicates whether a string is expected after this token. This is used to tell strings from constant symbol
     /// references durng tokenization, both of which are enclosed in quotes.
-    pub fn expects_string(&self) -> bool {
-        matches!(
-            self,
-            Self::Bool
-                | Self::Choice
-                | Self::Hex
-                | Self::Int
-                | Self::Mainmenu
-                | Self::Menu
-                | Self::ORSource
-                | Self::OSource
-                | Self::Prompt
-                | Self::RSource
-                | Self::Source
-                | Self::String
-                | Self::Tristate
-        )
-    }
+    // pub fn expects_string(&self) -> bool {
+    //     matches!(
+    //         self,
+    //         Self::Bool
+    //             | Self::Choice
+    //             | Self::Hex
+    //             | Self::Int
+    //             | Self::Mainmenu
+    //             | Self::Menu
+    //             | Self::ORSource
+    //             | Self::OSource
+    //             | Self::Prompt
+    //             | Self::RSource
+    //             | Self::Source
+    //             | Self::String
+    //             | Self::Tristate
+    //     )
+    // }
 
     /// Indicates whether this is a type token.
     #[inline(always)]
@@ -106,15 +118,15 @@ impl Token {
         matches!(self, Self::ORSource | Self::RSource)
     }
 
-    /// Indicates whether this is a required source token.
+    /// Indicates whether this is an optional source token.
     #[inline(always)]
-    pub fn is_required_source(&self) -> bool {
-        matches!(self, Self::RSource | Self::Source)
+    pub fn is_optional_source(&self) -> bool {
+        matches!(self, Self::OSource | Self::ORSource)
     }
 
-    /// Indicates whether this is a relation (comparison) token.
+    /// Indicates whether this is a comparison token.
     #[inline(always)]
-    pub fn is_relation(&self) -> bool {
+    pub fn is_cmp(&self) -> bool {
         matches!(self, Self::Eq | Self::Ne | Self::Gt | Self::Ge | Self::Lt | Self::Le)
     }
 
@@ -124,15 +136,18 @@ impl Token {
         matches!(self, Self::ORSource | Self::OSource | Self::RSource | Self::Source)
     }
 
-    /// Returns the literal boolean, hex, int, string, or tristate value if this is a literal; otherwise `None`.
-    pub fn lit_value(&self) -> Option<LitValue> {
+    /// Returns the literal value of this token if it is a literal, or `None` otherwise.
+    pub fn literal_value(&self) -> Option<LitValue> {
         match self {
+            Self::HexLit(h) => Some(LitValue::Hex(*h)),
             Self::IntLit(i) => Some(LitValue::Int(*i)),
             Self::StrLit(s) => Some(LitValue::String(s.clone())),
-            Self::Symbol(s) if s == "y" => Some(LitValue::Tristate(Tristate::True)),
-            Self::Symbol(s) if s == "n" => Some(LitValue::Tristate(Tristate::False)),
-            Self::Symbol(s) if s == "m" => Some(LitValue::Tristate(Tristate::Maybe)),
-            Self::Symbol(s) => Some(LitValue::Symbol(s.clone())),
+            Self::Symbol(s) => match s.as_str() {
+                "n" => Some(LitValue::Tristate(Tristate::False)),
+                "m" => Some(LitValue::Tristate(Tristate::Maybe)),
+                "y" => Some(LitValue::Tristate(Tristate::True)),
+                _ => Some(LitValue::Symbol(s.clone())),
+            },
             _ => None,
         }
     }
@@ -214,7 +229,7 @@ static KEYWORDS: phf::Map<&'static str, Token> = phf_map! {
 };
 
 impl Display for Token {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         match self {
             Self::HexLit(h) => write!(f, "{h:#x}"),
             Self::IntLit(i) => write!(f, "{i}"),
@@ -281,21 +296,96 @@ impl Display for Token {
     }
 }
 
-impl From<&Token> for String {
-    fn from(t: &Token) -> Self {
-        t.to_string()
+impl LocToken {
+    // Note: We prefer these instead of implementing Deref<Target = Token> because we want to
+    // annotate location information on some return values.
+
+    /// Indicates whether the underlying token is a type token.
+    #[inline(always)]
+    pub fn is_type(&self) -> bool {
+        self.token.is_type()
+    }
+
+    /// Indicates whether the underlying token is a relative source token.
+    #[inline(always)]
+    pub fn is_relative_source(&self) -> bool {
+        self.token.is_relative_source()
+    }
+
+    /// Indicates whether the underlying token is an optional source token.
+    #[inline(always)]
+    pub fn is_optional_source(&self) -> bool {
+        self.token.is_optional_source()
+    }
+
+    /// Indicates whether the underlying token is a relation (comparison) token.
+    #[inline(always)]
+    pub fn is_relation(&self) -> bool {
+        self.token.is_cmp()
+    }
+
+    /// Indicates whether the underlying token is a source token.
+    #[inline(always)]
+    pub fn is_source(&self) -> bool {
+        self.token.is_source()
+    }
+
+    /// Returns the literal value of this token if it is a literal, or `None` otherwise.
+    #[inline(always)]
+    pub fn literal_value(&self) -> Option<LocLitValue> {
+        self.token.literal_value().map(|v| LocLitValue::new(v, self.location))
+    }
+
+    /// Returns the symbol name or `None` if this isn't a symbol.
+    #[inline(always)]
+    pub fn symbol_value(&self) -> Option<LocStr> {
+        self.token.symbol_value().map(|s| LocStr::new(s, self.location))
+    }
+
+    /// Returns the string literal value or `None` if this isn't a string literal.
+    #[inline(always)]
+    pub fn string_literal_value(&self) -> Option<LocStr> {
+        self.token.string_literal_value().map(|s| LocStr::new(s, self.location))
+    }
+
+    /// Returns the type value or `None` if this isn't a type.
+    #[inline(always)]
+    pub fn r#type(&self) -> Option<Type> {
+        self.token.r#type()
     }
 }
 
-pub(crate) fn parse_keyword_or_symbol(chars: &mut PeekableChars) -> Result<Located<Token>, KConfigError> {
-    let start = chars.location().clone();
+impl Located for LocToken {
+    fn location(&self) -> Location {
+        self.location
+    }
+}
+
+impl LocToken {
+    /// Create a new located token.
+    pub fn new(token: Token, location: Location) -> Self {
+        Self {
+            token,
+            location,
+        }
+    }
+}
+
+impl Display for LocToken {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        Display::fmt(&self.token, f)
+    }
+}
+
+pub(crate) fn parse_keyword_or_symbol(chars: &mut PeekableChars) -> Result<LocToken, KConfigError> {
+    let start = chars.location();
     let mut ident = String::new();
     let Some(c) = chars.next() else {
-        return Err(KConfigError::unexpected_eof(Expected::KeywordOrSymbol, &start));
+        return Err(KConfigError::unexpected_eof(Expected::KeywordOrSymbol, start));
     };
 
     if !c.is_alphabetic() && c != '_' {
-        return Err(KConfigError::unexpected(c, Expected::KeywordOrSymbol, &start));
+        return Err(KConfigError::unexpected(c, Expected::KeywordOrSymbol, start));
     }
 
     ident.push(c);
@@ -313,8 +403,10 @@ pub(crate) fn parse_keyword_or_symbol(chars: &mut PeekableChars) -> Result<Locat
         }
     }
 
-    match KEYWORDS.get(&ident) {
-        Some(kw) => Ok(Located::new(kw.clone(), start)),
-        None => Ok(Located::new(Token::Symbol(ident), start)),
-    }
+    let token = match KEYWORDS.get(&ident) {
+        Some(kw) => kw.clone(),
+        None => Token::Symbol(ident),
+    };
+
+    Ok(LocToken::new(token, start))
 }

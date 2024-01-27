@@ -1,16 +1,18 @@
-use crate::parser::{Config, Expected, Expr, KConfigError, Located, PeekableTokenLines, Prompt, Token, TokenLine};
+use crate::parser::{
+    Config, Expected, KConfigError, LocExpr, LocString, Located, PeekableTokenLines, Prompt, Token, TokenLine,
+};
 
 /// Choice entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Choice {
     /// The name of the choice.
-    pub name: Located<String>,
+    pub name: LocString,
 
     /// Optional prompt for the choice.
     pub prompt: Option<Prompt>,
 
     /// Optional help text for the choice.
-    pub help: Option<Located<String>>,
+    pub help: Option<LocString>,
 
     /// Possible symbols for the choice, represented as [`Config`] entries.
     pub configs: Vec<Config>,
@@ -19,17 +21,17 @@ pub struct Choice {
     pub defaults: Vec<ChoiceDefault>,
 
     /// Dependencies for this config from `depend on` statements.
-    pub depends_on: Vec<Located<Expr>>,
+    pub depends_on: Vec<LocExpr>,
 }
 
 /// A possible default for a choice entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChoiceDefault {
     /// The target to choose for this default.
-    pub target: Located<String>,
+    pub target: LocString,
 
     /// An optional condition for this default. If unspecified, this is equivalent to `y` (always true).
-    pub condition: Option<Located<Expr>>,
+    pub condition: Option<LocExpr>,
 }
 
 impl Choice {
@@ -40,27 +42,27 @@ impl Choice {
         };
 
         let (blk_cmd, name) = tokens.read_cmd_sym(true)?;
-        assert_eq!(blk_cmd.as_ref(), &Token::Choice);
+        assert_eq!(blk_cmd.token, Token::Choice);
 
         let mut prompt = None;
         let mut help = None;
         let mut configs = Vec::new();
         let mut defaults = Vec::new();
-        let mut last_loc = name.location().clone();
+        let mut last_loc = name.location();
         let mut depends_on = Vec::new();
 
         loop {
             let Some(tokens) = lines.peek() else {
-                return Err(KConfigError::unexpected_eof(Expected::EndChoice, &last_loc));
+                return Err(KConfigError::unexpected_eof(Expected::EndChoice, last_loc));
             };
 
             let Some(cmd) = tokens.peek() else {
                 panic!("Expected choice entry");
             };
 
-            last_loc = cmd.location().clone();
+            last_loc = cmd.location();
 
-            match cmd.as_ref() {
+            match cmd.token {
                 Token::EndChoice => {
                     _ = lines.next();
                     break;
@@ -79,7 +81,7 @@ impl Choice {
 
                 Token::Depends => {
                     let mut tokens = lines.next().unwrap();
-                    let depends = Expr::parse_depends_on(&mut tokens)?;
+                    let depends = LocExpr::parse_depends_on(&mut tokens)?;
                     depends_on.push(depends);
                 }
 
@@ -118,14 +120,14 @@ impl ChoiceDefault {
     pub fn parse(tokens: &mut TokenLine) -> Result<Self, KConfigError> {
         let (cmd, target) = tokens.read_cmd_sym(false)?;
 
-        assert!(cmd.as_ref() == &Token::Default);
+        assert!(cmd.token == Token::Default);
 
         let condition = if let Some(if_token) = tokens.next() {
-            if if_token.as_ref() != &Token::If {
+            if if_token.token != Token::If {
                 return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
             }
 
-            let cond = Expr::parse(if_token.location(), tokens)?;
+            let cond = LocExpr::parse(if_token.location(), tokens)?;
 
             if let Some(unexpected) = tokens.next() {
                 return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));

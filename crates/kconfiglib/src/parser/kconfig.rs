@@ -1,7 +1,5 @@
 use {
-    crate::parser::{
-        parse_stream, Block, Context, KConfigError, Located, LocatedBlocks, PeekableChars, PeekableTokenLinesExt,
-    },
+    crate::parser::{parse_stream, Block, Context, KConfigError, LocatedBlocks, PeekableChars, PeekableTokenLinesExt},
     std::{fs::File, io::Read, path::Path},
 };
 
@@ -9,33 +7,29 @@ use {
 #[derive(Debug, Default)]
 pub struct KConfig {
     /// The blocks found in the hierarchy.
-    pub blocks: Vec<Located<Block>>,
+    pub blocks: Vec<Block>,
 }
 
 impl KConfig {
     /// Read a full Kconfig tree starting with the given Kconfig file.
     ///
     /// This recursively reads any configuration files in `source` (or `osource`, `orsource`, `rsource`) statements.
-    pub fn parse<F, C>(filename: F, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
+    pub fn parse<C>(filename: &Path, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
     where
-        F: AsRef<Path>,
         C: Context,
     {
-        let filename = filename.as_ref();
         Self::parse_filename(filename, base_dir, context)
     }
 
     /// Parse the given file.
-    pub fn parse_filename<F, C>(filename: F, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
+    pub fn parse_filename<C>(filename: &Path, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
     where
-        F: AsRef<Path>,
         C: Context,
     {
-        let filename = filename.as_ref();
         let mut file = File::open(filename)?;
         let mut input = String::new();
         file.read_to_string(&mut input)?;
-        Self::parse_str(PeekableChars::new(input.as_str(), filename.to_string_lossy().as_ref()), base_dir, context)
+        Self::parse_str(PeekableChars::new(input.as_str(), filename), base_dir, context)
     }
 
     /// Parse a KConfig file from the given string input.
@@ -96,7 +90,7 @@ mod tests {
     # Read the next file
     source "/tmp/myfile2"
 "##,
-                "test",
+                Path::new("test"),
             ),
             Path::new("/tmp"),
         )
@@ -116,18 +110,18 @@ mod tests {
         help
           Say foo
 "##,
-                "test",
+                Path::new("test"),
             ),
             Path::new("/tmp"),
         )
         .unwrap();
 
         assert_eq!(kconfig.blocks.len(), 1);
-        let Block::MenuConfig(c) = kconfig.blocks[0].as_ref() else {
+        let Block::MenuConfig(c) = &kconfig.blocks[0] else {
             panic!("Expected MenuConfig");
         };
 
-        assert_eq!(c.name.as_ref(), "FOO");
+        assert_eq!(c.name.as_str(), "FOO");
     }
 
     #[test_log::test]
@@ -148,7 +142,7 @@ mod tests {
             esp_idf.join("Kconfigs.projbuild.in").to_str().unwrap().to_string(),
         );
 
-        let kconfig = KConfig::parse(kconfig_filename, &base_dir, &context).unwrap();
+        let kconfig = KConfig::parse(&kconfig_filename, &base_dir, &context).unwrap();
         assert!(!kconfig.blocks.is_empty());
     }
 }

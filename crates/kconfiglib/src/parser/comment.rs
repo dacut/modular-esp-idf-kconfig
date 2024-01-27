@@ -1,4 +1,4 @@
-use crate::parser::{string_literal::parse_escape, Expected, KConfigError, PeekableChars};
+use crate::parser::{string_literal::parse_escape, Expected, KConfigError, Located, PeekableChars};
 
 /// Parse a comment from the stream.
 ///

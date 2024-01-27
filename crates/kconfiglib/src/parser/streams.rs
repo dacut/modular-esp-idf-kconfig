@@ -1,9 +1,10 @@
 use {
     crate::parser::{
-        comment::parse_comment, integer::parse_integer_literal, string_literal::parse_string_literal,
-        token::parse_keyword_or_symbol, whitespace::parse_hws0, Expected, Expr, KConfigError, Located, Location, Token,
+        cache_path, comment::parse_comment, integer::parse_integer_literal, string_literal::parse_string_literal,
+        token::parse_keyword_or_symbol, whitespace::parse_hws0, Expected, KConfigError, LocExpr, LocString, LocToken,
+        Located, Location, Token,
     },
-    std::{iter::FusedIterator, ops::Deref},
+    std::{iter::FusedIterator, ops::Deref, path::Path},
 };
 
 /// An iterator over a string slice from a file that returns characters and can peek at the next character.
@@ -14,20 +15,20 @@ use {
 /// * [`&str`][str] methods such as [`starts_with()`][str::starts_with()] can be used via [`Deref`][Deref].
 /// * It can return the location of the current string.
 #[derive(Clone, Debug)]
-pub struct PeekableChars<'a> {
-    base: &'a str,
+pub struct PeekableChars<'buf> {
+    base: &'buf str,
     offset: usize,
     location: Location,
 }
 
-impl<'a> PeekableChars<'a> {
+impl<'buf> PeekableChars<'buf> {
     /// Create a new PeekableChars from a string slice and filename.
-    pub fn new(base: &'a str, filename: &str) -> Self {
+    pub fn new(base: &'buf str, filename: &Path) -> Self {
         Self {
             base,
             offset: 0,
             location: Location {
-                filename: filename.into(),
+                filename: cache_path(filename.to_owned()),
                 line: 1,
                 column: 1,
             },
@@ -36,7 +37,7 @@ impl<'a> PeekableChars<'a> {
 
     /// Returns the underlying string.
     #[inline(always)]
-    pub fn base_str(&self) -> &'a str {
+    pub fn base_str(&self) -> &'buf str {
         self.base
     }
 
@@ -135,7 +136,7 @@ impl<'a> PeekableChars<'a> {
     }
 
     /// Read characters until the given predicate returns true or the end of the string is reached.
-    pub fn read_until(&mut self, predicate: impl CharPredicate) -> &'a str {
+    pub fn read_until(&mut self, predicate: impl CharPredicate) -> &'buf str {
         let chars = self.base[self.offset..].chars();
         let start = self.offset;
 
@@ -155,14 +156,15 @@ impl<'a> PeekableChars<'a> {
 
         &self.base[start..self.offset]
     }
+}
 
-    /// Returns the current location in the string.
-    pub fn location(&self) -> &Location {
-        &self.location
+impl Located for PeekableChars<'_> {
+    fn location(&self) -> Location {
+        self.location
     }
 }
 
-impl<'a> Deref for PeekableChars<'a> {
+impl<'buf> Deref for PeekableChars<'buf> {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
@@ -170,7 +172,7 @@ impl<'a> Deref for PeekableChars<'a> {
     }
 }
 
-impl<'a> Iterator for PeekableChars<'a> {
+impl<'buf> Iterator for PeekableChars<'buf> {
     type Item = char;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -199,7 +201,7 @@ impl<'a> Iterator for PeekableChars<'a> {
     }
 }
 
-impl<'a> FusedIterator for PeekableChars<'a> {}
+impl<'buf> FusedIterator for PeekableChars<'buf> {}
 
 /// A trait for predicates that match characters.
 pub trait CharPredicate {
@@ -223,15 +225,15 @@ impl CharPredicate for char {
 }
 
 /// An iterator over lines of tokens that can peek ahead at the next line without consuming it.
-pub struct PeekableTokenLines<'a> {
-    base: &'a [Vec<Located<Token>>],
+pub struct PeekableTokenLines<'buf> {
+    base: &'buf [Vec<LocToken>],
     offset: usize,
 }
 
-impl<'a> PeekableTokenLines<'a> {
+impl<'buf> PeekableTokenLines<'buf> {
     /// Peek at the next line in the string.
     #[inline(always)]
-    pub fn peek(&self) -> Option<TokenLine<'a>> {
+    pub fn peek(&self) -> Option<TokenLine<'buf>> {
         if self.offset < self.base.len() {
             Some(TokenLine {
                 base: &self.base[self.offset],
@@ -244,7 +246,7 @@ impl<'a> PeekableTokenLines<'a> {
 
     /// Peek at the nth character in the string.
     #[inline(always)]
-    pub fn peek_at(&self, n: usize) -> Option<TokenLine<'a>> {
+    pub fn peek_at(&self, n: usize) -> Option<TokenLine<'buf>> {
         if self.offset + n < self.base.len() {
             Some(TokenLine {
                 base: &self.base[self.offset + n],
@@ -257,13 +259,13 @@ impl<'a> PeekableTokenLines<'a> {
 
     /// Return the remainder of the lines.
     #[inline(always)]
-    pub fn remainder(&self) -> &'a [Vec<Located<Token>>] {
+    pub fn remainder(&self) -> &'buf [Vec<LocToken>] {
         &self.base[self.offset..]
     }
 
     /// Return the section of the string that has already been processed.
     #[inline(always)]
-    pub fn processed(&self) -> &'a [Vec<Located<Token>>] {
+    pub fn processed(&self) -> &'buf [Vec<LocToken>] {
         &self.base[..self.offset]
     }
 
@@ -285,8 +287,8 @@ impl<'a> PeekableTokenLines<'a> {
     }
 }
 
-impl<'a> Iterator for PeekableTokenLines<'a> {
-    type Item = TokenLine<'a>;
+impl<'buf> Iterator for PeekableTokenLines<'buf> {
+    type Item = TokenLine<'buf>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.peek() {
@@ -304,7 +306,7 @@ impl<'a> Iterator for PeekableTokenLines<'a> {
     }
 }
 
-impl<'a> FusedIterator for PeekableTokenLines<'a> {}
+impl<'buf> FusedIterator for PeekableTokenLines<'buf> {}
 
 /// An extension trait for `&[Vec<Token>]` that provides `peek_lines()`.
 pub trait PeekableTokenLinesExt {
@@ -312,7 +314,7 @@ pub trait PeekableTokenLinesExt {
     fn peek_lines(&self) -> PeekableTokenLines;
 }
 
-impl PeekableTokenLinesExt for [Vec<Located<Token>>] {
+impl PeekableTokenLinesExt for [Vec<LocToken>] {
     fn peek_lines(&self) -> PeekableTokenLines {
         PeekableTokenLines {
             base: self,
@@ -323,14 +325,14 @@ impl PeekableTokenLinesExt for [Vec<Located<Token>>] {
 
 /// An iterator over a single line of tokens that can peek ahead at the next token without consuming it.
 #[derive(Debug)]
-pub struct TokenLine<'a> {
-    base: &'a [Located<Token>],
+pub struct TokenLine<'buf> {
+    base: &'buf [LocToken],
     offset: usize,
 }
 
-impl<'a> TokenLine<'a> {
+impl<'buf> TokenLine<'buf> {
     /// Create a new `TokenLine` from the given slice of tokens.
-    pub fn new(base: &'a [Located<Token>]) -> Self {
+    pub fn new(base: &'buf [LocToken]) -> Self {
         Self {
             base,
             offset: 0,
@@ -339,7 +341,7 @@ impl<'a> TokenLine<'a> {
 
     /// Returns the underlying line of tokens as a slice.
     #[inline(always)]
-    pub fn line(&self) -> &'a [Located<Token>] {
+    pub fn line(&self) -> &'buf [LocToken] {
         self.base
     }
 
@@ -363,7 +365,7 @@ impl<'a> TokenLine<'a> {
 
     /// Peek at the next token in the line.
     #[inline(always)]
-    pub fn peek(&self) -> Option<&'a Located<Token>> {
+    pub fn peek(&self) -> Option<&'buf LocToken> {
         if self.offset < self.base.len() {
             Some(&self.base[self.offset])
         } else {
@@ -373,7 +375,7 @@ impl<'a> TokenLine<'a> {
 
     /// Peek at the nth token in the line.
     #[inline(always)]
-    pub fn peek_at(&self, n: usize) -> Option<&'a Located<Token>> {
+    pub fn peek_at(&self, n: usize) -> Option<&'buf LocToken> {
         if self.offset + n < self.base.len() {
             Some(&self.base[self.offset + n])
         } else {
@@ -382,7 +384,7 @@ impl<'a> TokenLine<'a> {
     }
 
     /// Read a command followed by a symbol from the line.
-    pub fn read_cmd_sym(&mut self, require_eol: bool) -> Result<(&Located<Token>, Located<String>), KConfigError> {
+    pub fn read_cmd_sym(&mut self, require_eol: bool) -> Result<(&LocToken, LocString), KConfigError> {
         let Some(cmd) = self.next() else {
             panic!("Expected keyword");
         };
@@ -391,7 +393,7 @@ impl<'a> TokenLine<'a> {
             return Err(KConfigError::missing(Expected::Symbol, cmd.location()));
         };
 
-        let Some(name) = name.map(Token::symbol_value).transpose() else {
+        let Some(name) = name.symbol_value() else {
             return Err(KConfigError::unexpected(name, Expected::Symbol, name.location()));
         };
 
@@ -401,20 +403,20 @@ impl<'a> TokenLine<'a> {
             }
         }
 
-        let name = name.map(ToString::to_string);
+        let name = name.to_loc_string();
 
         Ok((cmd, name))
     }
 
     /// Read a command followed by a string literal from the line.
-    pub fn read_cmd_str_lit(&mut self, require_eol: bool) -> Result<(&Located<Token>, Located<String>), KConfigError> {
+    pub fn read_cmd_str_lit(&mut self, require_eol: bool) -> Result<(&LocToken, LocString), KConfigError> {
         let cmd = self.next().unwrap();
 
         let Some(str_lit) = self.next() else {
             return Err(KConfigError::missing(Expected::StringLiteral, cmd.location()));
         };
 
-        let Some(str_lit) = str_lit.map(Token::string_literal_value).transpose() else {
+        let Some(str_lit) = str_lit.string_literal_value() else {
             return Err(KConfigError::unexpected(str_lit, Expected::StringLiteral, str_lit.location()));
         };
 
@@ -424,22 +426,22 @@ impl<'a> TokenLine<'a> {
             }
         }
 
-        let str_lit = str_lit.map(ToString::to_string);
+        let str_lit = str_lit.to_loc_string();
 
         Ok((cmd, str_lit))
     }
 
     /// Read an `if <expr>` expression, if present.
-    pub fn read_if_expr(&mut self, require_eof: bool) -> Result<Option<Located<Expr>>, KConfigError> {
+    pub fn read_if_expr(&mut self, require_eof: bool) -> Result<Option<LocExpr>, KConfigError> {
         let Some(if_token) = self.next() else {
             return Ok(None);
         };
 
-        if if_token.as_ref() != &Token::If {
+        if if_token.token != Token::If {
             return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
         }
 
-        let expr = Expr::parse(if_token.location(), self)?;
+        let expr = LocExpr::parse(if_token.location(), self)?;
 
         if require_eof {
             if let Some(unexpected) = self.next() {
@@ -455,10 +457,10 @@ impl<'a> TokenLine<'a> {
     /// This is tokenized as [`Token::Help`] followed by a [`Token::StrLit`].
     ///
     /// If the line is not a `help` block, this returns an error.
-    pub fn read_help(&mut self) -> Result<Located<String>, KConfigError> {
+    pub fn read_help(&mut self) -> Result<LocString, KConfigError> {
         let cmd = self.next().unwrap();
 
-        if cmd.as_ref() != &Token::Help {
+        if cmd.token != Token::Help {
             return Err(KConfigError::unexpected(cmd, Expected::Help, cmd.location()));
         }
 
@@ -466,7 +468,7 @@ impl<'a> TokenLine<'a> {
             return Err(KConfigError::missing(Expected::StringLiteral, cmd.location()));
         };
 
-        let Some(text) = text.map(Token::string_literal_value).transpose() else {
+        let Some(text) = text.string_literal_value() else {
             return Err(KConfigError::unexpected(text, Expected::StringLiteral, text.location()));
         };
 
@@ -474,13 +476,13 @@ impl<'a> TokenLine<'a> {
             return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
         };
 
-        let text = text.map(ToString::to_string);
+        let text = text.to_loc_string();
         Ok(text)
     }
 }
 
-impl<'a> Iterator for TokenLine<'a> {
-    type Item = &'a Located<Token>;
+impl<'buf> Iterator for TokenLine<'buf> {
+    type Item = &'buf LocToken;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.peek() {
@@ -498,10 +500,10 @@ impl<'a> Iterator for TokenLine<'a> {
     }
 }
 
-impl<'a> FusedIterator for TokenLine<'a> {}
+impl<'buf> FusedIterator for TokenLine<'buf> {}
 
 /// Parse the input stream into lines of tokens.
-pub fn parse_stream(mut chars: PeekableChars) -> Result<Vec<Vec<Located<Token>>>, KConfigError> {
+pub fn parse_stream(mut chars: PeekableChars) -> Result<Vec<Vec<LocToken>>, KConfigError> {
     let mut lines = vec![];
 
     loop {
@@ -519,7 +521,7 @@ pub fn parse_stream(mut chars: PeekableChars) -> Result<Vec<Vec<Located<Token>>>
 /// Parse the next non-empty line from the stream.
 ///
 /// This returns an empty vector if EOF is reached without parsing any tokens.
-pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<Located<Token>>, KConfigError> {
+pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<LocToken>, KConfigError> {
     'outer: loop {
         let mut tokens = vec![];
 
@@ -540,10 +542,10 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<Located<Token>>, KCon
                     if tokens.is_empty() {
                         // This line is empty; continue parsing from the next line.
                         continue 'outer;
-                    } else if tokens.len() == 1 && tokens[0].as_ref() == &Token::Help {
+                    } else if tokens.len() == 1 && tokens[0].token == Token::Help {
                         // This is a help block. Parse the help text and return it as a string literal.
-                        let start = chars.location().clone();
-                        tokens.push(Located::new(Token::StrLit(read_help_block(chars)?), start));
+                        let start = chars.location();
+                        tokens.push(LocToken::new(Token::StrLit(read_help_block(chars)?), start));
                         return Ok(tokens);
                     } else {
                         // This line is not empty; return what we have.
@@ -552,15 +554,15 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<Located<Token>>, KCon
                 }
 
                 '"' | '\'' => {
-                    let start = chars.location().clone();
+                    let start = chars.location();
                     let s = parse_string_literal(chars, c)?;
-                    tokens.push(Located::new(Token::StrLit(s), start));
+                    tokens.push(LocToken::new(Token::StrLit(s), start));
                 }
 
                 '+' | '-' | '0'..='9' => {
-                    let start = chars.location().clone();
+                    let start = chars.location();
                     let value = parse_integer_literal(chars)?;
-                    tokens.push(Located::new(Token::IntLit(value), start));
+                    tokens.push(LocToken::new(Token::IntLit(value), start));
                 }
 
                 c if c.is_whitespace() => {
@@ -573,27 +575,27 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<Located<Token>>, KCon
                 }
 
                 '&' if chars.starts_with("&&") => {
-                    let start = chars.location().clone();
+                    let start = chars.location();
                     _ = chars.next();
                     _ = chars.next();
-                    tokens.push(Located::new(Token::And, start));
+                    tokens.push(LocToken::new(Token::And, start));
                 }
 
                 '|' if chars.starts_with("||") => {
-                    let start = chars.location().clone();
+                    let start = chars.location();
                     _ = chars.next();
                     _ = chars.next();
-                    tokens.push(Located::new(Token::Or, start));
+                    tokens.push(LocToken::new(Token::Or, start));
                 }
 
                 '=' => {
-                    let start = chars.location().clone();
+                    let start = chars.location();
                     _ = chars.next();
-                    tokens.push(Located::new(Token::Eq, start));
+                    tokens.push(LocToken::new(Token::Eq, start));
                 }
 
                 '!' => {
-                    let start = chars.location().clone();
+                    let start = chars.location();
                     _ = chars.next();
                     let op = if chars.peek() == Some('=') {
                         _ = chars.next();
@@ -602,23 +604,23 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<Located<Token>>, KCon
                         Token::Not
                     };
 
-                    tokens.push(Located::new(op, start));
+                    tokens.push(LocToken::new(op, start));
                 }
 
                 '(' => {
-                    let start = chars.location().clone();
+                    let start = chars.location();
                     _ = chars.next();
-                    tokens.push(Located::new(Token::LParen, start));
+                    tokens.push(LocToken::new(Token::LParen, start));
                 }
 
                 ')' => {
-                    let start = chars.location().clone();
+                    let start = chars.location();
                     _ = chars.next();
-                    tokens.push(Located::new(Token::RParen, start));
+                    tokens.push(LocToken::new(Token::RParen, start));
                 }
 
                 '<' => {
-                    let start = chars.location().clone();
+                    let start = chars.location();
                     _ = chars.next();
                     let op = if chars.peek() == Some('=') {
                         _ = chars.next();
@@ -627,11 +629,11 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<Located<Token>>, KCon
                         Token::Lt
                     };
 
-                    tokens.push(Located::new(op, start));
+                    tokens.push(LocToken::new(op, start));
                 }
 
                 '>' => {
-                    let start = chars.location().clone();
+                    let start = chars.location();
                     _ = chars.next();
                     let op = if chars.peek() == Some('=') {
                         _ = chars.next();
@@ -640,7 +642,7 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<Located<Token>>, KCon
                         Token::Gt
                     };
 
-                    tokens.push(Located::new(op, start));
+                    tokens.push(LocToken::new(op, start));
                 }
 
                 '\\' if chars.starts_with("\\\n") => {
