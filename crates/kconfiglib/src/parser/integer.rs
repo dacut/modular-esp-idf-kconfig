@@ -1,6 +1,6 @@
-use crate::parser::{Expected, KConfigError, Located, PeekableChars};
+use crate::parser::{Expected, KConfigError, Located, PeekableChars, Token};
 
-pub fn parse_integer_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError> {
+pub fn parse_int_hex_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     let start = chars.location();
 
     let Some(c) = chars.peek() else {
@@ -8,19 +8,19 @@ pub fn parse_integer_literal(chars: &mut PeekableChars) -> Result<i64, KConfigEr
     };
 
     if c == '+' || c == '-' {
-        parse_decimal_literal(chars)
+        parse_dec_literal(chars)
     } else if chars.starts_with("0x") || chars.starts_with("0X") {
         parse_hex_literal(chars)
     } else if chars.starts_with('0') {
-        parse_octal_literal(chars)
+        parse_dec_oct_literal(chars)
     } else if !c.is_ascii_digit() {
         Err(KConfigError::unexpected(c, Expected::IntegerLiteral, start))
     } else {
-        parse_decimal_literal(chars)
+        parse_dec_literal(chars)
     }
 }
 
-fn parse_decimal_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError> {
+fn parse_dec_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     let mut literal = String::new();
     let start = chars.location();
 
@@ -47,10 +47,12 @@ fn parse_decimal_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError>
     }
 
     #[allow(clippy::from_str_radix_10)]
-    i64::from_str_radix(&literal, 10).map_err(|_| KConfigError::invalid_integer(literal, start))
+    let value = i64::from_str_radix(&literal, 10).map_err(|_| KConfigError::invalid_integer(literal, start))?;
+
+    Ok(Token::IntLit(value))
 }
 
-fn parse_hex_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError> {
+fn parse_hex_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     let mut literal = String::new();
     let start = chars.location();
 
@@ -85,11 +87,13 @@ fn parse_hex_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError> {
         return Err(KConfigError::invalid_integer(format!("0{radix_char}"), start));
     }
 
-    i64::from_str_radix(&literal, 16)
-        .map_err(|_| KConfigError::invalid_integer(format!("0{radix_char}{literal}"), start))
+    let value = u64::from_str_radix(&literal, 16)
+        .map_err(|_| KConfigError::invalid_integer(format!("0{radix_char}{literal}"), start))?;
+
+    Ok(Token::HexLit(value))
 }
 
-fn parse_octal_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError> {
+fn parse_dec_oct_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     let mut literal = String::new();
     let start = chars.location();
 
@@ -113,9 +117,10 @@ fn parse_octal_literal(chars: &mut PeekableChars) -> Result<i64, KConfigError> {
         }
     }
 
-    if literal.is_empty() {
-        return Ok(0);
+    if literal.is_empty() || literal == "0" {
+        Ok(Token::IntLit(0))
+    } else {
+        let value = u64::from_str_radix(&literal, 8).map_err(|_| KConfigError::invalid_integer(format!("0{literal}"), start))?;
+        Ok(Token::HexLit(value))
     }
-
-    i64::from_str_radix(&literal, 16).map_err(|_| KConfigError::invalid_integer(format!("0{literal}"), start))
 }

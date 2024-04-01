@@ -59,8 +59,8 @@ pub struct ConfigDefault {
 /// * `imply TARGET if EXPR`
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigTarget {
-    /// The target of this `select` or `imply` statement.
-    pub target: LocString,
+    /// The name of the target of this `select` or `imply` statement.
+    pub target_name: LocString,
 
     /// An optional condition for this `select` or `imply` statement. If unspecified, this is equivalent to `y` (always true).
     pub condition: Option<LocExpr>,
@@ -293,13 +293,13 @@ impl ConfigDefault {
 impl ConfigTarget {
     /// Parse the remainder of a `select` or `imply` statement (after the `select` or `imply` keyword).
     pub fn parse(tokens: &mut TokenLine) -> Result<Self, KConfigError> {
-        let (cmd, target) = tokens.read_cmd_sym(false)?;
+        let (cmd, target_name) = tokens.read_cmd_sym(false)?;
         assert!(matches!(cmd.token, Token::Select | Token::Imply));
 
         let condition = tokens.read_if_expr(true)?;
 
         Ok(Self {
-            target,
+            target_name,
             condition,
         })
     }

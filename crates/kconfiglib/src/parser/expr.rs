@@ -8,13 +8,13 @@ use {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Expr {
     /// Named symbol (terminal).
-    Symbol(String),
+    Symbol(ExprSymbol),
 
     /// Hex constant (terminal).
     Hex(u64),
 
     /// Integer constant (terminal).
-    Integer(i64),
+    Int(i64),
 
     /// String literal (terminal).
     String(String),
@@ -52,6 +52,13 @@ pub enum ExprCmpOp {
 
     /// Greater than or equal
     Ge,
+}
+
+/// An expression symbol.
+#[derive(Clone, Debug)]
+pub struct ExprSymbol {
+    /// The name of the symbol.
+    pub name: String,
 }
 
 /// An expression with location information.
@@ -212,9 +219,15 @@ impl LocExpr {
 
         let loc = token.location();
         let expr = match &token.token {
-            Token::Symbol(s) => Expr::Symbol(s.clone()),
+            Token::Symbol(s) => Expr::Symbol(ExprSymbol::new(s.clone())),
             Token::HexLit(i) => Expr::Hex(*i),
-            Token::IntLit(i) => Expr::Integer(*i),
+            Token::IntLit(i) => {
+                if *i == 1099511627775 {
+                    panic!("Wrong type");
+                }
+
+                Expr::Int(*i)
+            }
             Token::StrLit(s) => Expr::String(s.clone()),
             Token::LParen => return Self::parse_paren(prev, tokens),
             _ => return Err(KConfigError::unexpected(token, Expected::Expr, token.location())),
@@ -253,9 +266,9 @@ impl LocExpr {
 impl Display for Expr {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         match self {
-            Self::Symbol(s) => write!(f, "{s}"),
+            Self::Symbol(s) => write!(f, "{}", s.name),
             Self::Hex(i) => write!(f, "0x{i:x}"),
-            Self::Integer(i) => write!(f, "{i}"),
+            Self::Int(i) => write!(f, "{i}"),
             Self::String(s) => write!(f, "{s:?}"),
             Self::Cmp(op, lhs, rhs) => {
                 let lhs = match lhs.expr {
@@ -318,6 +331,22 @@ impl TryFrom<Token> for ExprCmpOp {
             Token::Ge => Ok(Self::Ge),
             _ => Err(()),
         }
+    }
+}
+
+impl ExprSymbol {
+    /// Create a new, unresolved `ExprSymbol`.
+    pub fn new(name: String) -> Self {
+        Self {
+            name,
+        }
+    }
+}
+
+impl Eq for ExprSymbol {}
+impl PartialEq for ExprSymbol {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
     }
 }
 

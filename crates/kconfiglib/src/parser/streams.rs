@@ -1,6 +1,6 @@
 use {
     crate::parser::{
-        cache_path, comment::parse_comment, integer::parse_integer_literal, string_literal::parse_string_literal,
+        cache_path, comment::parse_comment, integer::parse_int_hex_literal, string_literal::parse_string_literal,
         token::parse_keyword_or_symbol, whitespace::parse_hws0, Expected, KConfigError, LocExpr, LocString, LocToken,
         Located, Location, Token,
     },
@@ -561,8 +561,8 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<LocToken>, KConfigErr
 
                 '+' | '-' | '0'..='9' => {
                     let start = chars.location();
-                    let value = parse_integer_literal(chars)?;
-                    tokens.push(LocToken::new(Token::IntLit(value), start));
+                    let tok = parse_int_hex_literal(chars)?;
+                    tokens.push(LocToken::new(tok, start));
                 }
 
                 c if c.is_whitespace() => {

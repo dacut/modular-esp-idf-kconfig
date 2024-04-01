@@ -1,9 +1,12 @@
 use {
-    crate::parser::{
-        Choice, Config, Context, Expected, Expr, KConfigError, LocExpr, LocString, Located, Menu, PeekableTokenLines,
-        Source, Token, TokenLine,
+    crate::{
+        parser::{
+            Choice, Config, Expected, Expr, KConfigError, LocExpr, LocString, Located, Menu, PeekableTokenLines,
+            Source, Token, TokenLine,
+        },
+        Context, ResolveBlock,
     },
-    std::path::Path,
+    std::{cell::RefCell, path::Path, rc::Rc},
 };
 
 /// A block in a Kconfig file.
@@ -38,7 +41,7 @@ pub struct IfBlock {
     pub condition: LocExpr,
 
     /// The items in the block.
-    pub items: Vec<Block>,
+    pub items: Vec<Rc<RefCell<Block>>>,
 }
 
 impl Block {
@@ -155,63 +158,67 @@ impl Block {
     }
 }
 
-/// A trait for blocks that contain other blocks; used to resolve `source` commands and `if` blocks that encompass
-/// other blocks.
-pub trait LocatedBlocks {
-    /// Resolve `source` commands and `if` blocks that encompass other blocks.
-    fn resolve_blocks_recursive<C>(&mut self, base_dir: &Path, context: &C) -> Result<(), KConfigError>
-    where
-        C: Context;
-}
+impl ResolveBlock for Rc<RefCell<Block>> {
+    type Output = Vec<Rc<RefCell<Block>>>;
 
-impl LocatedBlocks for Block {
-    fn resolve_blocks_recursive<C>(&mut self, base_dir: &Path, context: &C) -> Result<(), KConfigError>
+    fn resolve_block<C>(&self, base_dir: &Path, context: &C, parent_cond: Option<&LocExpr>) -> Result<Self::Output, KConfigError>
     where
         C: Context,
     {
-        if let Block::Menu(m) = self {
-            m.resolve_blocks_recursive(base_dir, context)?;
+        match &*self.borrow() {
+            Block::If(ref i) => {
+                let blocks = i.resolve_block(base_dir, context, parent_cond)?;
+                for block in blocks.iter() {
+                    if block.borrow().as_if().is_some() {
+                        panic!("Expected if block to be resolved: {:?}", block.borrow());
+                    }
+                }
+                Ok(blocks)
+            }
+            Block::Menu(ref m) => {
+                let menu = m.resolve_block(base_dir, context, parent_cond)?;
+                for block in menu.blocks.iter() {
+                    if block.borrow().as_if().is_some() {
+                        panic!("Expected if block to be resolved: {:?}", block.borrow());
+                    }
+                }
+                Ok(vec![Rc::new(RefCell::new(Block::Menu(menu)))])
+            }
+            Block::Source(ref s) => {
+                let blocks = s.resolve_block(base_dir, context, parent_cond)?;
+                for block in blocks.iter() {
+                    if block.borrow().as_if().is_some() {
+                        panic!("Expected if block to be resolved: {:?}", block.borrow());
+                    }
+                }
+                Ok(blocks)
+            }
+            _ => Ok(vec![self.clone()]),
         }
-
-        Ok(())
     }
 }
 
-impl LocatedBlocks for Vec<Block> {
-    fn resolve_blocks_recursive<C>(&mut self, base_dir: &Path, context: &C) -> Result<(), KConfigError>
+impl ResolveBlock for [Rc<RefCell<Block>>] {
+    type Output = Vec<Rc<RefCell<Block>>>;
+
+    fn resolve_block<C>(&self, base_dir: &Path, context: &C, parent_cond: Option<&LocExpr>) -> Result<Self::Output, KConfigError>
     where
         C: Context,
     {
-        // Change this to extract_if() when https://github.com/rust-lang/rust/issues/43244 is complete.
-        let mut i = 0;
+        // Create a new vec to hold the new blocks.
+        let mut new_blocks = Vec::with_capacity(self.len());
 
-        while i < self.len() {
-            // Can't use a match block here since it will hold onto self[i] and we're removing it.
-            if matches!(self[i], Block::Source(_)) {
-                // Evaluate the source block.
-                let block = self.remove(i);
-                let Block::Source(ref s) = block else {
-                    unreachable!();
-                };
-
-                let blocks = s.evaluate(base_dir, context)?;
-                self.extend(blocks);
-            } else if matches!(self[i], Block::If(_)) {
-                // Evaluate the if block.
-                let block = self.remove(i);
-                let Block::If(i_blk) = block else {
-                    unreachable!();
-                };
-
-                let blocks = i_blk.evaluate()?;
-                self.extend(blocks);
-            } else {
-                self[i].resolve_blocks_recursive(base_dir, context)?;
-                i += 1;
+        for block in self.iter() {
+            let expanded = block.resolve_block(base_dir, context, parent_cond)?;
+            for block in expanded.iter() {
+                if block.borrow().as_if().is_some() {
+                    panic!("Expected if block to be resolved: {:?}", block.borrow());
+                }
             }
+            new_blocks.extend(expanded);
         }
 
-        Ok(())
+        Ok(new_blocks)
     }
 }
 
@@ -256,7 +263,7 @@ impl IfBlock {
                         return Err(KConfigError::unexpected_eof(Expected::EndIf, last_loc));
                     };
 
-                    items.push(block);
+                    items.push(Rc::new(RefCell::new(block)));
                 }
             }
         }
@@ -266,42 +273,30 @@ impl IfBlock {
             items,
         })
     }
+}
 
-    fn evaluate(self) -> Result<Vec<Block>, KConfigError> {
-        let mut items = Vec::with_capacity(self.items.len());
+impl ResolveBlock for IfBlock {
+    type Output = Vec<Rc<RefCell<Block>>>;
 
-        for mut item in self.items.into_iter() {
-            match item {
-                Block::Choice(ref mut c) => {
-                    c.depends_on.push(self.condition.clone());
-                    items.push(item);
-                }
-                Block::Config(ref mut c) => {
-                    c.depends_on.push(self.condition.clone());
-                    items.push(item);
-                }
-                Block::If(mut if_blk) => {
-                    let cond_a = Box::new(self.condition.clone());
-                    let cond_b = Box::new(if_blk.condition);
+    fn resolve_block<C>(&self, base_dir: &Path, context: &C, parent_cond: Option<&LocExpr>) -> Result<Self::Output, KConfigError>
+    where
+        C: Context,
+    {
+        let mut result = Vec::with_capacity(self.items.len());
 
-                    // Add our condition as an AND with the sub if-block's condition.
-                    if_blk.condition = LocExpr::new(Expr::And(cond_a, cond_b), self.condition.location());
-                    let sub_items = if_blk.evaluate()?;
-                    items.extend(sub_items);
-                }
-                Block::Menu(ref mut m) => {
-                    m.depends_on.push(self.condition.clone());
-                    items.push(item);
-                }
-                Block::MenuConfig(ref mut mc) => {
-                    mc.depends_on.push(self.condition.clone());
-                    items.push(item);
-                }
+        // AND the parent condition with the current condition.
+        let sub_cond = if let Some(parent_cond) = parent_cond {
+            let sub_expr = Expr::And(Box::new(parent_cond.clone()), Box::new(self.condition.clone()));
+            LocExpr::new(sub_expr, self.condition.location())
+        } else {
+            self.condition.clone()
+        };
 
-                _ => (),
-            }
+        for item in self.items.iter() {
+            let items = item.resolve_block(base_dir, context, Some(&sub_cond))?;
+            result.extend(items);
         }
 
-        Ok(items)
+        Ok(result)
     }
 }

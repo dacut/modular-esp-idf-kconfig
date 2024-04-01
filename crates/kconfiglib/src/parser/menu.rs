@@ -1,8 +1,9 @@
 use {
-    crate::parser::{
-        Block, Context, Expected, KConfigError, LocExpr, LocString, Located, LocatedBlocks, PeekableTokenLines, Token,
+    crate::{
+        parser::{Block, Expected, KConfigError, LocExpr, LocString, Located, PeekableTokenLines, Token},
+        Context, ResolveBlock,
     },
-    std::path::Path,
+    std::{cell::RefCell, path::Path, rc::Rc},
 };
 
 /// A menu block in a Kconfig file.
@@ -12,7 +13,7 @@ pub struct Menu {
     pub prompt: LocString,
 
     /// The items in the menu.
-    pub blocks: Vec<Block>,
+    pub blocks: Vec<Rc<RefCell<Block>>>,
 
     /// Dependencies for this config from `depend on` statements.
     pub depends_on: Vec<LocExpr>,
@@ -97,7 +98,7 @@ impl Menu {
                         return Err(KConfigError::unexpected_eof(Expected::EndMenu, last_loc));
                     };
 
-                    items.push(block);
+                    items.push(Rc::new(RefCell::new(block)));
                 }
             }
         }
@@ -112,11 +113,33 @@ impl Menu {
     }
 }
 
-impl LocatedBlocks for Menu {
-    fn resolve_blocks_recursive<C>(&mut self, base_dir: &Path, context: &C) -> Result<(), KConfigError>
+impl ResolveBlock for Menu {
+    type Output = Self;
+
+    fn resolve_block<C>(&self, base_dir: &Path, context: &C, parent_cond: Option<&LocExpr>) -> Result<Self, KConfigError>
     where
         C: Context,
     {
-        self.blocks.resolve_blocks_recursive(base_dir, context)
+        // Fields that are cloned.
+        let prompt = self.prompt.clone();
+        let depends_on = self.depends_on.clone();
+        let visibility = self.visibility.clone();
+        let comments = self.comments.clone();
+
+        log::debug!("Loading menu: {:?}", prompt);
+        // Load the blocks.
+        let blocks = self.blocks.resolve_block(base_dir, context, parent_cond)?;
+        for block in blocks.iter() {
+            assert!(block.borrow().as_if().is_none(), "Unresolved if block: {:?}", block.borrow());
+        }
+        let result = Menu {
+            prompt,
+            blocks,
+            depends_on,
+            visibility,
+            comments,
+        };
+
+        Ok(result)
     }
 }

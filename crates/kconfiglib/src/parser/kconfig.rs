@@ -1,77 +1,87 @@
 use {
-    crate::parser::{parse_stream, Block, Context, KConfigError, LocatedBlocks, PeekableChars, PeekableTokenLinesExt},
-    std::{fs::File, io::Read, path::Path},
+    crate::{
+        parser::{parse_stream, Block, KConfigError, LocExpr, PeekableChars, PeekableTokenLinesExt},
+        Context, ResolveBlock,
+    },
+    std::{cell::RefCell, fs::File, io::Read, path::Path, rc::Rc},
 };
 
 /// A parsed KConfig hierarchy.
 #[derive(Debug, Default)]
 pub struct KConfig {
-    /// The blocks found in the hierarchy.
-    pub blocks: Vec<Block>,
+    /// The blocks found in the top-level of the KConfig file.
+    pub blocks: Vec<Rc<RefCell<Block>>>,
 }
 
 impl KConfig {
     /// Read a full Kconfig tree starting with the given Kconfig file.
     ///
     /// This recursively reads any configuration files in `source` (or `osource`, `orsource`, `rsource`) statements.
-    pub fn parse<C>(filename: &Path, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
-    where
-        C: Context,
-    {
-        Self::parse_filename(filename, base_dir, context)
-    }
-
-    /// Parse the given file.
-    pub fn parse_filename<C>(filename: &Path, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
+    pub fn from_file<C>(filename: &Path, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
     where
         C: Context,
     {
         let mut file = File::open(filename)?;
         let mut input = String::new();
         file.read_to_string(&mut input)?;
-        Self::parse_str(PeekableChars::new(input.as_str(), filename), base_dir, context)
+        Self::from_str(PeekableChars::new(input.as_str(), filename), base_dir, context)
     }
 
-    /// Parse a KConfig file from the given string input.
-    pub fn parse_str<C>(input: PeekableChars, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
+    /// Create a KConfig file from the given string input.
+    pub fn from_str<C>(input: PeekableChars, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
     where
         C: Context,
     {
-        let mut kconfig = Self::parse_str_raw(input, base_dir)?;
-        kconfig.resolve_blocks_recursive(base_dir, context)?;
-
-        Ok(kconfig)
+        let result = Self::from_str_raw(input, base_dir, context)?;
+        result.resolve_block(base_dir, context, None)
     }
 
     /// Parse a KConfig file from the given string input without resolving any `source` statements.
-    pub(crate) fn parse_str_raw(input: PeekableChars, base_dir: &Path) -> Result<Self, KConfigError> {
+    pub(crate) fn from_str_raw<C>(input: PeekableChars, base_dir: &Path, _context: &C) -> Result<Self, KConfigError>
+    where
+        C: Context,
+    {
         let tokens = parse_stream(input)?;
         let mut lines = tokens.peek_lines();
         let mut blocks = Vec::new();
 
         while let Some(block) = Block::parse(&mut lines, base_dir)? {
-            blocks.push(block);
+            blocks.push(Rc::new(RefCell::new(block)));
         }
 
-        Ok(Self {
+        let result = Self {
             blocks,
-        })
+        };
+
+        Ok(result)
     }
 }
 
-impl LocatedBlocks for KConfig {
-    fn resolve_blocks_recursive<C>(&mut self, base_dir: &Path, context: &C) -> Result<(), KConfigError>
+impl ResolveBlock for KConfig {
+    type Output = Self;
+
+    fn resolve_block<C>(
+        &self,
+        base_dir: &Path,
+        context: &C,
+        parent_cond: Option<&LocExpr>,
+    ) -> Result<Self, KConfigError>
     where
         C: Context,
     {
-        self.blocks.resolve_blocks_recursive(base_dir, context)
+        let blocks = self.blocks.resolve_block(base_dir, context, parent_cond)?;
+        let result = Self {
+            blocks,
+        };
+
+        Ok(result)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use {
-        super::{Block, KConfig, PeekableChars},
+        crate::parser::{Block, Expr, KConfig, PeekableChars},
         std::{
             collections::HashMap,
             env,
@@ -81,7 +91,9 @@ mod tests {
 
     #[test]
     fn kconfig_comments_blank_lines() {
-        let kconfig = KConfig::parse_str_raw(
+        let context = HashMap::default();
+
+        let kconfig = KConfig::from_str_raw(
             PeekableChars::new(
                 r##"mainmenu "Hello, world!"
 
@@ -93,6 +105,7 @@ mod tests {
                 Path::new("test"),
             ),
             Path::new("/tmp"),
+            &context,
         )
         .unwrap();
 
@@ -101,7 +114,8 @@ mod tests {
 
     #[test]
     fn kconfig_menuconfig() {
-        let kconfig = KConfig::parse_str_raw(
+        let context = HashMap::default();
+        let kconfig = KConfig::from_str_raw(
             PeekableChars::new(
                 r##"
     menuconfig FOO
@@ -113,11 +127,12 @@ mod tests {
                 Path::new("test"),
             ),
             Path::new("/tmp"),
+            &context,
         )
         .unwrap();
 
         assert_eq!(kconfig.blocks.len(), 1);
-        let Block::MenuConfig(c) = &kconfig.blocks[0] else {
+        let Block::MenuConfig(c) = &*kconfig.blocks[0].borrow() else {
             panic!("Expected MenuConfig");
         };
 
@@ -142,7 +157,45 @@ mod tests {
             esp_idf.join("Kconfigs.projbuild.in").to_str().unwrap().to_string(),
         );
 
-        let kconfig = KConfig::parse(&kconfig_filename, &base_dir, &context).unwrap();
+        let kconfig = KConfig::from_file(&kconfig_filename, &base_dir, &context).unwrap();
         assert!(!kconfig.blocks.is_empty());
+    }
+
+    #[test_log::test]
+    fn config_selects() {
+        let context = HashMap::default();
+
+        let kconfig = KConfig::from_str(
+            PeekableChars::new(
+                r##"config FOO
+    default n
+
+config BAR
+    default y
+    select BAR if BAZ
+
+config BAZ
+    default y"##,
+                Path::new("test"),
+            ),
+            Path::new("/tmp"),
+            &context,
+        )
+        .unwrap();
+
+        assert_eq!(kconfig.blocks.len(), 3);
+        let block = kconfig.blocks[1].borrow();
+        let bar = block.as_config().unwrap();
+        assert_eq!(bar.selects.len(), 1);
+
+        let cfg_target = &bar.selects[0];
+        assert_eq!(cfg_target.target_name.as_str(), "BAR");
+
+        let cond = cfg_target.condition.as_ref().unwrap();
+        if let Expr::Symbol(sym) = &cond.expr {
+            assert_eq!(sym.name.as_str(), "BAZ");
+        } else {
+            panic!("Expected symbol");
+        }
     }
 }

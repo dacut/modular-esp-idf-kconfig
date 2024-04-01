@@ -4,7 +4,6 @@ mod block;
 mod choice;
 mod comment;
 mod config;
-mod context;
 mod error;
 mod expr;
 mod integer;
@@ -21,6 +20,6 @@ mod types;
 mod whitespace;
 
 pub use {
-    block::*, choice::*, config::*, context::*, error::*, expr::*, kconfig::*, lit_value::*, location::*, menu::*,
+    block::*, choice::*, config::*, error::*, expr::*, kconfig::*, lit_value::*, location::*, menu::*,
     prompt::*, source::*, streams::*, string_literal::*, token::*, types::*,
 };

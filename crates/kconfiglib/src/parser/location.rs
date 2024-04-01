@@ -1,13 +1,12 @@
 use {
     once_cell::sync::OnceCell,
     std::{
-        cmp::{Eq, Ord, PartialEq, PartialOrd},
+        cmp::{Eq, PartialEq},
         collections::HashMap,
         fmt::{Debug, Display, Formatter, Result as FmtResult},
         hash::{Hash, Hasher},
         ops::{Deref, DerefMut},
         path::{Path, PathBuf},
-        string::ToString,
         sync::Mutex,
     },
 };
