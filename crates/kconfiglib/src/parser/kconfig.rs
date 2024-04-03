@@ -17,23 +17,65 @@ impl KConfig {
     /// Read a full Kconfig tree starting with the given Kconfig file.
     ///
     /// This recursively reads any configuration files in `source` (or `osource`, `orsource`, `rsource`) statements.
-    pub fn from_file<C>(filename: &Path, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
+    pub fn read_from_file<C>(&mut self, filename: &Path, base_dir: &Path, context: &C) -> Result<(), KConfigError>
     where
         C: Context,
     {
         let mut file = File::open(filename)?;
         let mut input = String::new();
         file.read_to_string(&mut input)?;
-        Self::from_str(PeekableChars::new(input.as_str(), filename), base_dir, context)
+        self.read_from_str(PeekableChars::new(input.as_str(), filename), base_dir, context)
     }
 
-    /// Create a KConfig file from the given string input.
+    /// Populate this KConfig with the tree from the given string input.
+    ///
+    /// This recursively reads any configuration files in `source` (or `osource`, `orsource`, `rsource`) statements.
+    pub fn read_from_str<C>(&mut self, input: PeekableChars, base_dir: &Path, context: &C) -> Result<(), KConfigError>
+    where
+        C: Context,
+    {
+        self.read_from_str_raw(input, base_dir, context)?;
+        self.resolve_block(base_dir, context, None)?;
+        Ok(())
+    }
+
+    /// Parse a KConfig file from the given string input without resolving any `source` statements.
+    pub(crate) fn read_from_str_raw<C>(&mut self, input: PeekableChars, base_dir: &Path, _context: &C) -> Result<(), KConfigError>
+    where
+        C: Context,
+    {
+        let tokens = parse_stream(input)?;
+        let mut lines = tokens.peek_lines();
+
+        while let Some(block) = Block::parse(&mut lines, base_dir)? {
+            self.blocks.push(Rc::new(RefCell::new(block)));
+        }
+
+        Ok(())
+    }
+
+    /// Create a new KConfig instance by reading a full Kconfig tree starting with the given Kconfig file.
+    ///
+    /// This recursively reads any configuration files in `source` (or `osource`, `orsource`, `rsource`) statements.
+    pub fn from_file<C>(filename: &Path, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
+    where
+        C: Context,
+    {
+        let mut result = Self::default();
+        result.read_from_file(filename, base_dir, context)?;
+        Ok(result)
+    }
+
+    /// Create a new KConfig with the tree from the given string input.
+    ///
+    /// This recursively reads any configuration files in `source` (or `osource`, `orsource`, `rsource`) statements.
     pub fn from_str<C>(input: PeekableChars, base_dir: &Path, context: &C) -> Result<Self, KConfigError>
     where
         C: Context,
     {
-        let result = Self::from_str_raw(input, base_dir, context)?;
-        result.resolve_block(base_dir, context, None)
+        let mut result = Self::default();
+        result.read_from_str(input, base_dir, context)?;
+        Ok(result)
     }
 
     /// Parse a KConfig file from the given string input without resolving any `source` statements.
@@ -41,20 +83,11 @@ impl KConfig {
     where
         C: Context,
     {
-        let tokens = parse_stream(input)?;
-        let mut lines = tokens.peek_lines();
-        let mut blocks = Vec::new();
-
-        while let Some(block) = Block::parse(&mut lines, base_dir)? {
-            blocks.push(Rc::new(RefCell::new(block)));
-        }
-
-        let result = Self {
-            blocks,
-        };
-
+        let mut result = Self::default();
+        result.read_from_str_raw(input, base_dir, _context)?;
         Ok(result)
     }
+    
 }
 
 impl ResolveBlock for KConfig {
