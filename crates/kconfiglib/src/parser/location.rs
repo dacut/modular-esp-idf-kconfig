@@ -80,6 +80,13 @@ impl LocString {
     }
 }
 
+impl AsRef<str> for LocString {
+    #[inline(always)]
+    fn as_ref(&self) -> &str {
+        &self.value
+    }
+}
+
 impl Deref for LocString {
     type Target = String;
 
@@ -255,6 +262,9 @@ impl PartialOrd<str> for LocStr<'_> {
     }
 }
 
+/// Cache of paths so we can return static references to them.
+/// 
+/// Paths are never evicted from this cache. Yes, it's a memory leak. No, we don't care.
 static PATH_CACHE: OnceCell<Mutex<HashMap<PathBuf, &'static PathBuf>>> = OnceCell::new();
 
 /// Return the cached path for the given path.

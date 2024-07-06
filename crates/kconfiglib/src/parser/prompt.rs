@@ -1,4 +1,4 @@
-use crate::parser::{Expected, KConfigError, LocExpr, LocString, Located, Location, Token, TokenLine};
+use crate::parser::{Expected, Expr, KConfigError, LocString, Located, Location, Token, TokenLine, Tristate};
 
 /// Prompt for a config or choice block along with an optional condition.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -6,8 +6,9 @@ pub struct Prompt {
     /// The prompt title.
     pub title: LocString,
 
-    /// Optional expression that determines whether the prompt is shown.
-    pub condition: Option<LocExpr>,
+    /// Expression that determines whether the prompt is shown. If not specified in the KConfig, this is
+    /// `Expr::Tristate(Tristate::True)`.
+    pub condition: Expr,
 }
 
 impl Prompt {
@@ -15,7 +16,7 @@ impl Prompt {
     pub fn new(title: LocString) -> Self {
         Self {
             title,
-            condition: None,
+            condition: Expr::Tristate(Tristate::True),
         }
     }
 
@@ -36,9 +37,9 @@ impl Prompt {
                 return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
             }
 
-            Some(LocExpr::parse(if_token.location(), tokens)?)
+            Expr::parse(if_token.location(), tokens)?
         } else {
-            None
+            Expr::Tristate(Tristate::True)
         };
 
         Ok(Prompt {

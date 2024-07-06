@@ -120,7 +120,8 @@ fn parse_dec_oct_literal(chars: &mut PeekableChars) -> Result<Token, KConfigErro
     if literal.is_empty() || literal == "0" {
         Ok(Token::IntLit(0))
     } else {
-        let value = u64::from_str_radix(&literal, 8).map_err(|_| KConfigError::invalid_integer(format!("0{literal}"), start))?;
+        let value = u64::from_str_radix(&literal, 8)
+            .map_err(|_| KConfigError::invalid_integer(format!("0{literal}"), start))?;
         Ok(Token::HexLit(value))
     }
 }

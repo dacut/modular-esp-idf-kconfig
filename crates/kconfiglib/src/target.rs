@@ -86,8 +86,8 @@ impl clap::ValueEnum for Target {
     fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
         Some(
             clap::builder::PossibleValue::new(self.config_name())
-            .alias(self.name())
-            .help(format!("Use {} as the target MCU", self.config_name()))
+                .alias(self.name())
+                .help(format!("Use {} as the target MCU", self.config_name())),
         )
     }
 }

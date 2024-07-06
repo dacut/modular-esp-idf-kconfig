@@ -1,7 +1,7 @@
 use {
     crate::parser::{
         cache_path, comment::parse_comment, integer::parse_int_hex_literal, string_literal::parse_string_literal,
-        token::parse_keyword_or_symbol, whitespace::parse_hws0, Expected, KConfigError, LocExpr, LocString, LocToken,
+        token::parse_keyword_or_symbol, whitespace::parse_hws0, Expected, Expr, KConfigError, LocString, LocToken,
         Located, Location, Token,
     },
     std::{iter::FusedIterator, ops::Deref, path::Path},
@@ -285,6 +285,36 @@ impl<'buf> PeekableTokenLines<'buf> {
             self.offset = self.base.len();
         }
     }
+
+    /// Return the location of the next token, or the last token read if no next token is available.
+    pub fn location(&self) -> Location {
+        let mut offset = self.offset;
+        if offset == self.base.len() {
+            if offset == 0 {
+                return Location {
+                    filename: cache_path("<unknown>"),
+                    line: 1,
+                    column: 1,
+                };    
+            }
+            offset -= 1;
+        }
+
+        while self.base[offset].is_empty() && offset > 0 {
+            offset -= 1;
+        }
+
+        let line = &self.base[offset];
+        if line.is_empty() {
+            return Location {
+                filename: cache_path("<unknown>"),
+                line: 1,
+                column: 1,
+            };
+        }
+
+        line[line.len() - 1].location()
+    }
 }
 
 impl<'buf> Iterator for PeekableTokenLines<'buf> {
@@ -432,7 +462,7 @@ impl<'buf> TokenLine<'buf> {
     }
 
     /// Read an `if <expr>` expression, if present.
-    pub fn read_if_expr(&mut self, require_eof: bool) -> Result<Option<LocExpr>, KConfigError> {
+    pub fn read_if_expr(&mut self, require_eof: bool) -> Result<Option<Expr>, KConfigError> {
         let Some(if_token) = self.next() else {
             return Ok(None);
         };
@@ -441,7 +471,7 @@ impl<'buf> TokenLine<'buf> {
             return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
         }
 
-        let expr = LocExpr::parse(if_token.location(), self)?;
+        let expr = Expr::parse(if_token.location(), self)?;
 
         if require_eof {
             if let Some(unexpected) = self.next() {

@@ -1,9 +1,12 @@
 use {
     crate::{
-        parser::{Block, Expected, KConfigError, LocExpr, LocString, Located, PeekableTokenLines, Token},
-        Context, ResolveBlock,
+        parser::{
+            Block, BlockId, Expected, Expr, KConfig, KConfigError, LocString, Located, PeekableTokenLines, Token,
+            Tristate,
+        },
+        Context,
     },
-    std::{cell::RefCell, path::Path, rc::Rc},
+    std::path::Path,
 };
 
 /// A menu block in a Kconfig file.
@@ -13,24 +16,39 @@ pub struct Menu {
     pub prompt: LocString,
 
     /// The items in the menu.
-    pub blocks: Vec<Rc<RefCell<Block>>>,
+    pub blocks: Vec<BlockId>,
 
-    /// Dependencies for this config from `depend on` statements.
-    pub depends_on: Vec<LocExpr>,
+    /// Dependencies for this menu from `depend on` statements.
+    pub depends_on: Expr,
 
-    /// Visibility in the menu. If `None`, the menu is visibile by default
-    /// (equivalent to `y`/`true`).
-    pub visibility: Option<LocExpr>,
+    /// Visibility in the menu. If not set in the KConfig, this is `Expr::Tristate(Tristate::True)`.
+    pub visibility: Expr,
 
     /// Comments for the menu.
     pub comments: Vec<LocString>,
+
+    /// The parent menu (if any) of this menu.
+    pub parent: Option<BlockId>,
 }
 
 impl Menu {
     /// Parse a menu block.
     ///
-    /// * Parameters
-    pub fn parse(lines: &mut PeekableTokenLines, base_dir: &Path) -> Result<Self, KConfigError> {
+    /// Parameters:
+    /// * `kconfig`: The KConfig instance to add this config to.
+    /// * `lines`: The lines to parse. The first line must start with a [`Token::Config`] token.
+    /// * `_base_dir`: The base directory for the KConfig file (ignored).
+    /// * `parent_condition`: The condition that must be true for this config to be included.
+    /// * `parent`: The parent block of this config, if it's not a top-level config.
+
+    pub fn parse<C: Context>(
+        kconfig: &mut KConfig,
+        lines: &mut PeekableTokenLines,
+        base_dir: &Path,
+        parent_condition: Expr,
+        parent: Option<BlockId>,
+        context: &C,
+    ) -> Result<BlockId, KConfigError> {
         let mut tokens = lines.next().unwrap();
         assert!(!tokens.is_empty());
 
@@ -51,11 +69,21 @@ impl Menu {
             return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
         }
 
-        let prompt = prompt.to_loc_string();
+        let mut visibility = Expr::Tristate(Tristate::True);
+
+        let menu = Self {
+            prompt: prompt.to_loc_string(),
+            blocks: Vec::new(),
+            depends_on: Expr::Tristate(Tristate::True),
+            visibility: visibility.clone(),
+            comments: Vec::new(),
+            parent,
+        };
+        let block_id = kconfig.blocks.insert(Block::Menu(menu));
+
         let mut last_loc = prompt.location();
         let mut items = Vec::new();
-        let mut depends_on = Vec::new();
-        let mut visibility = None;
+        let mut depends_on = Expr::Tristate(Tristate::True);
         let mut comments = Vec::new();
 
         loop {
@@ -66,6 +94,10 @@ impl Menu {
             let Some(cmd) = tokens.peek() else {
                 panic!("Expected menu entry");
             };
+
+            if cmd.location() == last_loc {
+                panic!("No progress made in Menu::parse at {last_loc}")
+            }
 
             last_loc = cmd.location();
 
@@ -84,62 +116,37 @@ impl Menu {
 
                 Token::Depends => {
                     let mut tokens = lines.next().unwrap();
-                    let depends = LocExpr::parse_depends_on(&mut tokens)?;
-                    depends_on.push(depends);
+                    let depends = Expr::parse_depends_on(&mut tokens)?;
+                    depends_on = Expr::and(depends_on, depends);
                 }
 
                 Token::Visible => {
                     let mut tokens = lines.next().unwrap();
-                    let vis = LocExpr::parse_visible_if(&mut tokens)?;
-                    visibility = Some(vis);
+                    let vis = Expr::parse_visible_if(&mut tokens)?;
+                    visibility = vis;
                 }
                 _ => {
-                    let Some(block) = Block::parse(lines, base_dir)? else {
-                        return Err(KConfigError::unexpected_eof(Expected::EndMenu, last_loc));
-                    };
+                    let sub_block_ids = Block::parse_blocks(
+                        kconfig,
+                        lines,
+                        base_dir,
+                        parent_condition.clone(),
+                        Some(block_id),
+                        context,
+                    )?;
 
-                    items.push(Rc::new(RefCell::new(block)));
+                    items.extend(sub_block_ids);
                 }
             }
         }
 
-        Ok(Self {
-            prompt,
-            blocks: items,
-            depends_on,
-            visibility,
-            comments,
-        })
-    }
-}
+        // Update the menu with the parsed items.
+        let menu = kconfig.blocks.get_mut(block_id).unwrap().as_menu_mut().unwrap();
+        menu.blocks = items;
+        menu.depends_on = depends_on;
+        menu.visibility = visibility;
+        menu.comments = comments;
 
-impl ResolveBlock for Menu {
-    type Output = Self;
-
-    fn resolve_block<C>(&self, base_dir: &Path, context: &C, parent_cond: Option<&LocExpr>) -> Result<Self, KConfigError>
-    where
-        C: Context,
-    {
-        // Fields that are cloned.
-        let prompt = self.prompt.clone();
-        let depends_on = self.depends_on.clone();
-        let visibility = self.visibility.clone();
-        let comments = self.comments.clone();
-
-        log::debug!("Loading menu: {:?}", prompt);
-        // Load the blocks.
-        let blocks = self.blocks.resolve_block(base_dir, context, parent_cond)?;
-        for block in blocks.iter() {
-            assert!(block.borrow().as_if().is_none(), "Unresolved if block: {:?}", block.borrow());
-        }
-        let result = Menu {
-            prompt,
-            blocks,
-            depends_on,
-            visibility,
-            comments,
-        };
-
-        Ok(result)
+        Ok(block_id)
     }
 }

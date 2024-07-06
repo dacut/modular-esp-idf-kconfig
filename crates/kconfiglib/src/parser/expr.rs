@@ -1,14 +1,23 @@
 use {
-    crate::parser::{Expected, KConfigError, Located, Location, Token, TokenLine},
+    crate::{
+        parser::{Expected, Located, Location, Token, TokenLine, Tristate},
+        KConfigError,
+    },
     log::trace,
-    std::fmt::{Display, Formatter, Result as FmtResult},
+    std::{
+        collections::HashSet,
+        fmt::{Display, Formatter, Result as FmtResult},
+    },
 };
 
 /// An expression in the KConfig language.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Expr {
+    /// Tristate (terminal).
+    Tristate(Tristate),
+
     /// Named symbol (terminal).
-    Symbol(ExprSymbol),
+    Symbol(String),
 
     /// Hex constant (terminal).
     Hex(u64),
@@ -20,16 +29,16 @@ pub enum Expr {
     String(String),
 
     /// Comparison expression.
-    Cmp(ExprCmpOp, Box<LocExpr>, Box<LocExpr>),
+    Cmp(ExprCmpOp, Box<Expr>, Box<Expr>),
 
     /// Unary negation.
-    Not(Box<LocExpr>),
+    Not(Box<Expr>),
 
     /// Boolean AND.
-    And(Box<LocExpr>, Box<LocExpr>),
+    And(Box<Expr>, Box<Expr>),
 
     /// Boolean OR.
-    Or(Box<LocExpr>, Box<LocExpr>),
+    Or(Box<Expr>, Box<Expr>),
 }
 
 /// Comparison operator
@@ -54,29 +63,41 @@ pub enum ExprCmpOp {
     Ge,
 }
 
-/// An expression symbol.
-#[derive(Clone, Debug)]
-pub struct ExprSymbol {
-    /// The name of the symbol.
-    pub name: String,
-}
+impl Expr {
+    /// Create an expression that is a symbol with the given name.
+    /// This handles `y`, `n`, and `m` symbols as tristate values.
+    pub fn symbol(name: &str) -> Self {
+        match name {
+            "y" => Self::Tristate(Tristate::True),
+            "n" => Self::Tristate(Tristate::False),
+            "m" => Self::Tristate(Tristate::Maybe),
+            _ => Self::Symbol(name.to_string()),
+        }
+    }
 
-/// An expression with location information.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LocExpr {
-    /// The expression.
-    pub expr: Expr,
+    /// Create a expression that is the logical and between two expressions.
+    pub fn and(lhs: Expr, rhs: Expr) -> Self {
+        match lhs {
+            Self::Tristate(Tristate::True) => rhs,
+            Self::Tristate(Tristate::False) => Self::Tristate(Tristate::False),
+            _ => match rhs {
+                Self::Tristate(Tristate::True) => lhs,
+                Self::Tristate(Tristate::False) => Self::Tristate(Tristate::False),
+                _ => Self::And(lhs.into(), rhs.into()),
+            },
+        }
+    }
 
-    /// The location of the expression.
-    pub location: Location,
-}
-
-impl LocExpr {
-    /// Create a new located expression from the given raw expression and location.
-    pub fn new(expr: Expr, location: Location) -> Self {
-        Self {
-            expr,
-            location,
+    /// Create a expression that is the logical or between two expressions.
+    pub fn or(lhs: Expr, rhs: Expr) -> Self {
+        match lhs {
+            Self::Tristate(Tristate::True) => Self::Tristate(Tristate::True),
+            Self::Tristate(Tristate::False) => rhs,
+            _ => match rhs {
+                Self::Tristate(Tristate::True) => Self::Tristate(Tristate::True),
+                Self::Tristate(Tristate::False) => lhs,
+                _ => Self::Or(lhs.into(), rhs.into()),
+            },
         }
     }
 
@@ -151,9 +172,8 @@ impl LocExpr {
         }
 
         let op = tokens.next().unwrap();
-        let loc = lhs.location();
         let rhs = Self::parse_top(op.location(), tokens)?;
-        Ok(Self::new(Expr::Or(lhs.into(), rhs.into()), loc))
+        Ok(Self::Or(Box::new(lhs), Box::new(rhs)))
     }
 
     /// Parse an AND ('&&') expression, or return the underlying comparison expression.
@@ -168,9 +188,8 @@ impl LocExpr {
         }
 
         let op = tokens.next().unwrap();
-        let loc = lhs.location();
         let rhs = Self::parse_top(op.location(), tokens)?;
-        Ok(Self::new(Expr::And(lhs.into(), rhs.into()), loc))
+        Ok(Self::And(lhs.into(), rhs.into()))
     }
 
     /// Parse a comparison expression, or return the underlying unary-not expression.
@@ -189,10 +208,9 @@ impl LocExpr {
 
         _ = tokens.next();
         let rhs = Self::parse_top(op.location(), tokens)?;
-        let loc = lhs.location();
         let cmp = op.token.try_into().unwrap();
 
-        Ok(Self::new(Expr::Cmp(cmp, lhs.into(), rhs.into()), loc))
+        Ok(Self::Cmp(cmp, lhs.into(), rhs.into()))
     }
 
     /// Parse a unary not expression, or return the underlying terminal expression.
@@ -202,10 +220,9 @@ impl LocExpr {
         };
 
         if token.token == Token::Not {
-            let loc = token.location();
             _ = tokens.next();
             let expr = Self::parse_top(prev, tokens)?;
-            Ok(Self::new(Expr::Not(expr.into()), loc))
+            Ok(Self::Not(expr.into()))
         } else {
             Self::parse_terminal(prev, tokens)
         }
@@ -217,24 +234,17 @@ impl LocExpr {
             return Err(KConfigError::missing(Expected::Expr, prev));
         };
 
-        let loc = token.location();
         let expr = match &token.token {
-            Token::Symbol(s) => Expr::Symbol(ExprSymbol::new(s.clone())),
+            Token::Symbol(s) => Expr::symbol(s),
             Token::HexLit(i) => Expr::Hex(*i),
-            Token::IntLit(i) => {
-                if *i == 1099511627775 {
-                    panic!("Wrong type");
-                }
-
-                Expr::Int(*i)
-            }
+            Token::IntLit(i) => Expr::Int(*i),
             Token::StrLit(s) => Expr::String(s.clone()),
             Token::LParen => return Self::parse_paren(prev, tokens),
             _ => return Err(KConfigError::unexpected(token, Expected::Expr, token.location())),
         };
 
         _ = tokens.next();
-        Ok(Self::new(expr, loc))
+        Ok(expr)
     }
 
     /// Parse an expression in parentheses.
@@ -261,46 +271,79 @@ impl LocExpr {
 
         Ok(result)
     }
+
+    /// Returns all of the symbols found in this expression.
+    pub fn symbols(&self) -> HashSet<String> {
+        let mut result = HashSet::new();
+        self.symbols_into(&mut result);
+        result
+    }
+
+    /// Inserts all of the symbols found in this expression into the given set.
+    pub(crate) fn symbols_into(&self, result: &mut HashSet<String>) {
+        match self {
+            Self::Symbol(s) => {
+                result.insert(s.clone());
+            }
+            Self::Cmp(_, lhs, rhs) => {
+                lhs.symbols_into(result);
+                rhs.symbols_into(result);
+            }
+            Self::Not(inner) => {
+                inner.symbols_into(result);
+            }
+            Self::And(lhs, rhs) => {
+                lhs.symbols_into(result);
+                rhs.symbols_into(result);
+            }
+            Self::Or(lhs, rhs) => {
+                lhs.symbols_into(result);
+                rhs.symbols_into(result);
+            }
+            _ => (),
+        }
+    }
 }
 
 impl Display for Expr {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         match self {
-            Self::Symbol(s) => write!(f, "{}", s.name),
+            Self::Tristate(t) => Display::fmt(t, f),
+            Self::Symbol(s) => write!(f, "{s}"),
             Self::Hex(i) => write!(f, "0x{i:x}"),
             Self::Int(i) => write!(f, "{i}"),
             Self::String(s) => write!(f, "{s:?}"),
             Self::Cmp(op, lhs, rhs) => {
-                let lhs = match lhs.expr {
-                    Self::And(_, _) | Self::Or(_, _) => format!("({})", lhs.expr),
-                    _ => format!("{}", lhs.expr),
+                let lhs = match &**lhs {
+                    Self::And(_, _) | Self::Or(_, _) => format!("({lhs})"),
+                    _ => lhs.to_string(),
                 };
 
-                let rhs = match rhs.expr {
-                    Self::And(_, _) | Self::Or(_, _) => format!("({})", rhs.expr),
-                    _ => format!("{}", rhs.expr),
+                let rhs = match &**rhs {
+                    Self::And(_, _) | Self::Or(_, _) => format!("({rhs})"),
+                    _ => rhs.to_string(),
                 };
 
                 write!(f, "{lhs} {op} {rhs}")
             }
-            Self::Not(inner) => match inner.expr {
-                Self::Cmp(_, _, _) | Self::And(_, _) | Self::Or(_, _) => write!(f, "!({})", inner.expr),
-                _ => write!(f, "!{}", inner.expr),
+            Self::Not(inner) => match &**inner {
+                Self::Cmp(_, _, _) | Self::And(_, _) | Self::Or(_, _) => write!(f, "!({inner})"),
+                _ => write!(f, "!{inner}"),
             },
             Self::And(lhs, rhs) => {
-                let lhs = match lhs.expr {
-                    Self::Or(_, _) => format!("({})", lhs.expr),
-                    _ => format!("{}", lhs.expr),
+                let lhs = match **lhs {
+                    Self::Or(_, _) => format!("({lhs})"),
+                    _ => lhs.to_string(),
                 };
 
-                let rhs = match rhs.expr {
-                    Self::Or(_, _) => format!("({})", rhs.expr),
-                    _ => format!("{}", rhs.expr),
+                let rhs = match &**rhs {
+                    Self::Or(_, _) => format!("({rhs})"),
+                    _ => rhs.to_string(),
                 };
 
                 write!(f, "{lhs} && {rhs}")
             }
-            Self::Or(lhs, rhs) => write!(f, "{} || {}", lhs.expr, rhs.expr),
+            Self::Or(lhs, rhs) => write!(f, "{lhs} || {rhs}"),
         }
     }
 }
@@ -334,32 +377,10 @@ impl TryFrom<Token> for ExprCmpOp {
     }
 }
 
-impl ExprSymbol {
-    /// Create a new, unresolved `ExprSymbol`.
-    pub fn new(name: String) -> Self {
-        Self {
-            name,
-        }
-    }
-}
-
-impl Eq for ExprSymbol {}
-impl PartialEq for ExprSymbol {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-    }
-}
-
-impl Located for LocExpr {
-    fn location(&self) -> Location {
-        self.location
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use {
-        crate::parser::{LocToken, Location, Token},
+        crate::parser::{Expr, LocToken, Location, Token},
         std::path::Path,
     };
 
@@ -377,6 +398,6 @@ mod tests {
         ];
 
         let mut token_line = crate::parser::TokenLine::new(&tokens);
-        let _expr = super::LocExpr::parse(Location::new(path, 1, 1), &mut token_line).unwrap();
+        let _expr = Expr::parse(Location::new(path, 1, 1), &mut token_line).unwrap();
     }
 }

@@ -1,4 +1,5 @@
-use crate::parser::{Located, Location};
+use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
+use std::ops::Not;
 
 /// Literal value data.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -19,14 +20,16 @@ pub enum LitValue {
     Tristate(Tristate),
 }
 
-/// A literal value with a location.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LocLitValue {
-    /// The literal value.
-    pub value: LitValue,
-
-    /// The location of the literal value.
-    pub location: Location,
+impl Display for LitValue {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        match self {
+            LitValue::Hex(v) => write!(f, "0x{:x}", v),
+            LitValue::Int(v) => write!(f, "{v}"),
+            LitValue::String(v) => Debug::fmt(v, f), // Escape the string
+            LitValue::Symbol(v) => f.write_str(v),
+            LitValue::Tristate(v) => Display::fmt(v, f),
+        }
+    }
 }
 
 /// A tristate value.
@@ -44,20 +47,13 @@ pub enum Tristate {
     Maybe,
 }
 
-impl LocLitValue {
-    /// Create a new `LocLitValue` from the given literal value and location.
-    #[inline(always)]
-    pub fn new(value: LitValue, location: Location) -> Self {
-        Self {
-            value,
-            location,
+impl Display for Tristate {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        match self {
+            Tristate::False => f.write_str("n"),
+            Tristate::True => f.write_str("y"),
+            Tristate::Maybe => f.write_str("m"),
         }
-    }
-}
-
-impl Located for LocLitValue {
-    fn location(&self) -> Location {
-        self.location
     }
 }
 
@@ -81,6 +77,19 @@ impl TryFrom<Tristate> for bool {
             Tristate::False => Ok(false),
             Tristate::True => Ok(true),
             Tristate::Maybe => Err(TristateMaybe),
+        }
+    }
+}
+
+impl Not for Tristate {
+    type Output = Self;
+
+    #[inline(always)]
+    fn not(self) -> Self::Output {
+        match self {
+            Tristate::False => Tristate::True,
+            Tristate::True => Tristate::False,
+            Tristate::Maybe => Tristate::Maybe,
         }
     }
 }

@@ -1,6 +1,6 @@
 use {
     crate::parser::{
-        Expected, KConfigError, LitValue, LocLitValue, LocStr, Located, Location, PeekableChars, Tristate, Type,
+        Expected, KConfigError, LitValue, LocStr, Located, Location, PeekableChars, Tristate, Type,
     },
     phf::phf_map,
     std::fmt::{Display, Formatter, Result as FmtResult},
@@ -332,8 +332,8 @@ impl LocToken {
 
     /// Returns the literal value of this token if it is a literal, or `None` otherwise.
     #[inline(always)]
-    pub fn literal_value(&self) -> Option<LocLitValue> {
-        self.token.literal_value().map(|v| LocLitValue::new(v, self.location))
+    pub fn literal_value(&self) -> Option<LitValue> {
+        self.token.literal_value()
     }
 
     /// Returns the symbol name or `None` if this isn't a symbol.

@@ -1,57 +1,61 @@
 use {
     crate::{
-        parser::{parse_stream, Block, KConfigError, LocExpr, PeekableChars, PeekableTokenLinesExt},
-        Context, ResolveBlock,
+        parser::{parse_stream, Block, BlockId, Expr, KConfigError, PeekableChars, PeekableTokenLinesExt, Tristate},
+        Context,
     },
-    std::{cell::RefCell, fs::File, io::Read, path::Path, rc::Rc},
+    slotmap::SlotMap,
+    std::{collections::HashMap, fs::File, io::Read, path::Path},
 };
 
 /// A parsed KConfig hierarchy.
 #[derive(Debug, Default)]
 pub struct KConfig {
-    /// The blocks found in the top-level of the KConfig file.
-    pub blocks: Vec<Rc<RefCell<Block>>>,
+    /// The blocks found in the the KConfig file.
+    pub blocks: SlotMap<BlockId, Block>,
+
+    /// Map of config symbol names to their block ids.
+    pub configs: HashMap<String, BlockId>,
 }
 
 impl KConfig {
     /// Read a full Kconfig tree starting with the given Kconfig file.
     ///
     /// This recursively reads any configuration files in `source` (or `osource`, `orsource`, `rsource`) statements.
-    pub fn read_from_file<C>(&mut self, filename: &Path, base_dir: &Path, context: &C) -> Result<(), KConfigError>
+    pub fn read_from_file<C>(
+        &mut self,
+        filename: &Path,
+        base_dir: &Path,
+        parent_condition: Expr,
+        parent: Option<BlockId>,
+        context: &C,
+    ) -> Result<Vec<BlockId>, KConfigError>
     where
         C: Context,
     {
         let mut file = File::open(filename)?;
         let mut input = String::new();
         file.read_to_string(&mut input)?;
-        self.read_from_str(PeekableChars::new(input.as_str(), filename), base_dir, context)
+        self.read_from_str(PeekableChars::new(input.as_str(), filename), base_dir, parent_condition, parent, context)
     }
 
     /// Populate this KConfig with the tree from the given string input.
     ///
     /// This recursively reads any configuration files in `source` (or `osource`, `orsource`, `rsource`) statements.
-    pub fn read_from_str<C>(&mut self, input: PeekableChars, base_dir: &Path, context: &C) -> Result<(), KConfigError>
-    where
-        C: Context,
-    {
-        self.read_from_str_raw(input, base_dir, context)?;
-        self.resolve_block(base_dir, context, None)?;
-        Ok(())
-    }
-
-    /// Parse a KConfig file from the given string input without resolving any `source` statements.
-    pub(crate) fn read_from_str_raw<C>(&mut self, input: PeekableChars, base_dir: &Path, _context: &C) -> Result<(), KConfigError>
+    pub fn read_from_str<C>(
+        &mut self,
+        input: PeekableChars,
+        base_dir: &Path,
+        parent_condition: Expr,
+        parent: Option<BlockId>,
+        context: &C,
+    ) -> Result<Vec<BlockId>, KConfigError>
     where
         C: Context,
     {
         let tokens = parse_stream(input)?;
         let mut lines = tokens.peek_lines();
 
-        while let Some(block) = Block::parse(&mut lines, base_dir)? {
-            self.blocks.push(Rc::new(RefCell::new(block)));
-        }
-
-        Ok(())
+        Block::parse_blocks(self, &mut lines, base_dir, parent_condition, parent, context)
     }
 
     /// Create a new KConfig instance by reading a full Kconfig tree starting with the given Kconfig file.
@@ -62,7 +66,7 @@ impl KConfig {
         C: Context,
     {
         let mut result = Self::default();
-        result.read_from_file(filename, base_dir, context)?;
+        result.read_from_file(filename, base_dir, Expr::Tristate(Tristate::True), None, context)?;
         Ok(result)
     }
 
@@ -74,39 +78,7 @@ impl KConfig {
         C: Context,
     {
         let mut result = Self::default();
-        result.read_from_str(input, base_dir, context)?;
-        Ok(result)
-    }
-
-    /// Parse a KConfig file from the given string input without resolving any `source` statements.
-    pub(crate) fn from_str_raw<C>(input: PeekableChars, base_dir: &Path, _context: &C) -> Result<Self, KConfigError>
-    where
-        C: Context,
-    {
-        let mut result = Self::default();
-        result.read_from_str_raw(input, base_dir, _context)?;
-        Ok(result)
-    }
-    
-}
-
-impl ResolveBlock for KConfig {
-    type Output = Self;
-
-    fn resolve_block<C>(
-        &self,
-        base_dir: &Path,
-        context: &C,
-        parent_cond: Option<&LocExpr>,
-    ) -> Result<Self, KConfigError>
-    where
-        C: Context,
-    {
-        let blocks = self.blocks.resolve_block(base_dir, context, parent_cond)?;
-        let result = Self {
-            blocks,
-        };
-
+        result.read_from_str(input, base_dir, Expr::Tristate(Tristate::True), None, context)?;
         Ok(result)
     }
 }
@@ -114,7 +86,7 @@ impl ResolveBlock for KConfig {
 #[cfg(test)]
 mod tests {
     use {
-        crate::parser::{Block, Expr, KConfig, PeekableChars},
+        crate::parser::{Expr, KConfig, PeekableChars, Tristate},
         std::{
             collections::HashMap,
             env,
@@ -126,14 +98,14 @@ mod tests {
     fn kconfig_comments_blank_lines() {
         let context = HashMap::default();
 
-        let kconfig = KConfig::from_str_raw(
+        let kconfig = KConfig::from_str(
             PeekableChars::new(
                 r##"mainmenu "Hello, world!"
 
-    source "/tmp/myfile"
+    config FOO
 
-    # Read the next file
-    source "/tmp/myfile2"
+    # Another config
+    config BAR
 "##,
                 Path::new("test"),
             ),
@@ -148,7 +120,7 @@ mod tests {
     #[test]
     fn kconfig_menuconfig() {
         let context = HashMap::default();
-        let kconfig = KConfig::from_str_raw(
+        let kconfig = KConfig::from_str(
             PeekableChars::new(
                 r##"
     menuconfig FOO
@@ -165,17 +137,23 @@ mod tests {
         .unwrap();
 
         assert_eq!(kconfig.blocks.len(), 1);
-        let Block::MenuConfig(c) = &*kconfig.blocks[0].borrow() else {
-            panic!("Expected MenuConfig");
-        };
 
-        assert_eq!(c.name.as_str(), "FOO");
+        for (_, block) in kconfig.blocks.iter() {
+            let Some(c) = block.as_menuconfig() else {
+                panic!("Expected MenuConfig");
+            };
+
+            assert_eq!(c.name.as_str(), "FOO");
+        }
     }
 
     #[test_log::test]
     fn esp_idf() {
         let mut context = HashMap::default();
-        let base_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+        let base_dir = PathBuf::from(
+            env::var("CARGO_MANIFEST_DIR")
+                .unwrap_or_else(|_| env::current_dir().unwrap().to_str().unwrap().to_string()),
+        );
         let esp_idf = base_dir.join("tests/esp-idf");
         let kconfig_filename = esp_idf.join("Kconfig");
 
@@ -217,18 +195,43 @@ config BAZ
         .unwrap();
 
         assert_eq!(kconfig.blocks.len(), 3);
-        let block = kconfig.blocks[1].borrow();
-        let bar = block.as_config().unwrap();
-        assert_eq!(bar.selects.len(), 1);
 
-        let cfg_target = &bar.selects[0];
-        assert_eq!(cfg_target.target_name.as_str(), "BAR");
+        let mut foo_seen = false;
+        let mut bar_seen = false;
+        let mut baz_seen = false;
 
-        let cond = cfg_target.condition.as_ref().unwrap();
-        if let Expr::Symbol(sym) = &cond.expr {
-            assert_eq!(sym.name.as_str(), "BAZ");
-        } else {
-            panic!("Expected symbol");
+        for (_, block) in kconfig.blocks.iter() {
+            let Some(c) = block.as_config() else {
+                panic!("Expected Config");
+            };
+
+            match c.name.as_str() {
+                "FOO" => {
+                    foo_seen = true;
+                    assert_eq!(c.defaults.len(), 1);
+                    assert_eq!(c.defaults[0].value, Expr::Tristate(Tristate::False));
+                }
+                "BAR" => {
+                    bar_seen = true;
+                    assert_eq!(c.defaults.len(), 1);
+                    assert_eq!(c.defaults[0].value, Expr::Tristate(Tristate::True));
+                    assert_eq!(c.selects.len(), 1);
+                    assert_eq!(c.selects[0].target_name.as_str(), "BAR");
+                    assert_eq!(c.selects[0].condition, Expr::Symbol("BAZ".to_string()));
+                }
+                "BAZ" => {
+                    baz_seen = true;
+                    assert_eq!(c.defaults.len(), 1);
+                    assert_eq!(c.defaults[0].value, Expr::Tristate(Tristate::True));
+                }
+                _ => {
+                    unreachable!("Unexpected config {}", c.name.as_str());
+                }
+            }
         }
+
+        assert!(foo_seen);
+        assert!(bar_seen);
+        assert!(baz_seen);
     }
 }

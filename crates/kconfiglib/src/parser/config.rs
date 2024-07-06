@@ -1,6 +1,13 @@
-use crate::parser::{
-    Expected, KConfigError, LocExpr, LocLitValue, LocString, Located, PeekableTokenLines, Prompt, Token, TokenLine,
-    Type,
+use {
+    crate::{
+        parser::{
+            Block, BlockId, Expected, Expr, KConfig, KConfigError, LitValue, LocString, Located, PeekableTokenLines,
+            Prompt, Token, TokenLine, Tristate, Type,
+        },
+        Context,
+    },
+    log::warn,
+    std::path::Path,
 };
 
 /// Configuration entry.
@@ -28,7 +35,7 @@ pub struct Config {
     pub env: Option<LocString>,
 
     /// Dependencies for this config from `depend on` statements.
-    pub depends_on: Vec<LocExpr>,
+    pub depends_on: Expr,
 
     /// Other configs that are selected by this config.
     pub selects: Vec<ConfigTarget>,
@@ -38,16 +45,19 @@ pub struct Config {
 
     /// Range of acceptable values for this config.
     pub ranges: Vec<ConfigRange>,
+
+    /// The parent block of this config, if it's not a top-level config.
+    pub parent: Option<BlockId>,
 }
 
 /// Possible default for a configuration entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigDefault {
     /// The value of the default.
-    pub value: LocExpr,
+    pub value: Expr,
 
-    /// An optional condition for this default. If unspecified, this is equivalent to `y` (always true).
-    pub condition: Option<LocExpr>,
+    /// The condition for this default. If unspecified in the Kconfig, this is `Expr::Bool(true)`.
+    pub condition: Expr,
 }
 
 /// The target of a `select` or `imply` statement along with an optional associated condition.
@@ -60,31 +70,42 @@ pub struct ConfigDefault {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigTarget {
     /// The name of the target of this `select` or `imply` statement.
-    pub target_name: LocString,
+    pub target_name: String,
 
-    /// An optional condition for this `select` or `imply` statement. If unspecified, this is equivalent to `y` (always true).
-    pub condition: Option<LocExpr>,
+    /// The condition for this `select` or `imply` statement. If unspecified in the Kconfig, this is `Expr::Tristate(Tristate::True)`.
+    pub condition: Expr,
 }
 
 /// Range for a configuration entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigRange {
     /// The starting value of the range.
-    pub start: LocLitValue,
+    pub start: LitValue,
 
     /// The ending value of the range.
-    pub end: LocLitValue,
+    pub end: LitValue,
 
-    /// An optional condition for this range. If unspecified, this is equivalent to `y` (always true).
-    pub condition: Option<LocExpr>,
+    /// The condition for this range. If unspecified in the Kconfig, this is `Expr::Tristate(Tristate::True)`.
+    pub condition: Expr,
 }
 
 impl Config {
     /// Parse a `config` block.
     ///
     /// Parameters:
+    /// * `kconfig`: The KConfig instance to add this config to.
     /// * `lines`: The lines to parse. The first line must start with a [`Token::Config`] token.
-    pub fn parse(lines: &mut PeekableTokenLines) -> Result<Self, KConfigError> {
+    /// * `_base_dir`: The base directory for the KConfig file (ignored).
+    /// * `parent_condition`: The condition that must be true for this config to be included.
+    /// * `parent`: The parent block of this config, if it's not a top-level config.
+    pub fn parse<C: Context>(
+        kconfig: &mut KConfig,
+        lines: &mut PeekableTokenLines,
+        _base_dir: &Path,
+        parent_condition: Expr,
+        parent: Option<BlockId>,
+        _context: &C,
+    ) -> Result<BlockId, KConfigError> {
         let Some(mut tokens) = lines.next() else {
             panic!("Expected config block");
         };
@@ -101,7 +122,7 @@ impl Config {
         let mut help = None;
         let mut defaults = Vec::new();
         let mut env = None;
-        let mut depends_on = Vec::new();
+        let mut depends_on = parent_condition.clone();
         let mut selects = Vec::new();
         let mut implies = Vec::new();
         let mut ranges = Vec::new();
@@ -130,7 +151,7 @@ impl Config {
                 | Token::OSource
                 | Token::RSource
                 | Token::Source => {
-                    // Next config entry; stop here.
+                    // Next block entry; stop here.
                     break;
                 }
 
@@ -161,8 +182,8 @@ impl Config {
 
                 Token::Depends => {
                     let mut tokens = lines.next().unwrap();
-                    let depends = LocExpr::parse_depends_on(&mut tokens)?;
-                    depends_on.push(depends);
+                    let depends = Expr::parse_depends_on(&mut tokens)?;
+                    depends_on = Expr::and(depends_on, depends);
                 }
 
                 Token::Prompt => {
@@ -206,8 +227,8 @@ impl Config {
 
         let r#type = r#type.unwrap_or(Type::Unknown);
 
-        Ok(Self {
-            name,
+        let config = Self {
+            name: name.clone(),
             r#type,
             prompt,
             defaults,
@@ -218,7 +239,24 @@ impl Config {
             ranges,
             help,
             comments,
-        })
+            parent,
+        };
+
+        // If there's an existing config with this name, replace it.
+        if let Some(old_id) = kconfig.configs.get(config.name.as_ref()) {
+            let old = kconfig.blocks.remove(*old_id).unwrap().into_config_or_menuconfig().unwrap();
+            warn!("Redefining config {} at {}; previous definition is at {}", config.name, config.name.location(), old.name.location());
+        }
+        
+        let block = match blk_cmd.token {
+            Token::Config => Block::Config(config),
+            Token::MenuConfig => Block::MenuConfig(config),
+            _ => unreachable!(),
+        };
+
+        let block_id = kconfig.blocks.insert(block);
+        kconfig.configs.insert(name.into_inner(), block_id);
+        Ok(block_id)
     }
 
     fn parse_option(tokens: &mut TokenLine) -> Result<LocString, KConfigError> {
@@ -265,22 +303,22 @@ impl ConfigDefault {
             panic!("Expected default command");
         };
 
-        let value = LocExpr::parse(default_cmd.location(), tokens)?;
+        let value = Expr::parse(default_cmd.location(), tokens)?;
 
         let condition = if let Some(if_token) = tokens.next() {
             if if_token.token != Token::If {
                 return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
             }
 
-            let cond = LocExpr::parse(if_token.location(), tokens)?;
+            let cond = Expr::parse(if_token.location(), tokens)?;
 
             if let Some(unexpected) = tokens.next() {
                 return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
             }
 
-            Some(cond)
+            cond
         } else {
-            None
+            Expr::Tristate(Tristate::True)
         };
 
         Ok(Self {
@@ -296,10 +334,10 @@ impl ConfigTarget {
         let (cmd, target_name) = tokens.read_cmd_sym(false)?;
         assert!(matches!(cmd.token, Token::Select | Token::Imply));
 
-        let condition = tokens.read_if_expr(true)?;
+        let condition = tokens.read_if_expr(true)?.unwrap_or(Expr::Tristate(Tristate::True));
 
         Ok(Self {
-            target_name,
+            target_name: target_name.to_string(),
             condition,
         })
     }
@@ -333,9 +371,9 @@ impl ConfigRange {
                 return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
             }
 
-            Some(LocExpr::parse(if_token.location(), tokens)?)
+            Expr::parse(if_token.location(), tokens)?
         } else {
-            None
+            Expr::Tristate(Tristate::True)
         };
 
         if let Some(unexpected) = tokens.next() {

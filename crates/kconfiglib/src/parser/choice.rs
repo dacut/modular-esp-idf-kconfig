@@ -1,5 +1,12 @@
-use crate::parser::{
-    Config, Expected, KConfigError, LocExpr, LocString, Located, PeekableTokenLines, Prompt, Token, TokenLine,
+use {
+    crate::{
+        parser::{
+            Block, BlockId, Config, Expected, Expr, KConfig, KConfigError, LocString, Located, PeekableTokenLines,
+            Prompt, Token, TokenLine, Tristate,
+        },
+        Context,
+    },
+    std::{collections::HashSet, path::Path},
 };
 
 /// Choice entry.
@@ -15,13 +22,16 @@ pub struct Choice {
     pub help: Option<LocString>,
 
     /// Possible symbols for the choice, represented as [`Config`] entries.
-    pub configs: Vec<Config>,
+    pub configs: Vec<BlockId>,
 
     /// Default values for the choice.
     pub defaults: Vec<ChoiceDefault>,
 
     /// Dependencies for this config from `depend on` statements.
-    pub depends_on: Vec<LocExpr>,
+    pub depends_on: Expr,
+
+    /// The parent menu (if any) of this choice.
+    pub parent: Option<BlockId>,
 }
 
 /// A possible default for a choice entry.
@@ -30,13 +40,20 @@ pub struct ChoiceDefault {
     /// The target to choose for this default.
     pub target: LocString,
 
-    /// An optional condition for this default. If unspecified, this is equivalent to `y` (always true).
-    pub condition: Option<LocExpr>,
+    /// A condition for this default. If unspecified in the KConfig, this is `Expr::Tristate(Tristate::True)`
+    pub condition: Expr,
 }
 
 impl Choice {
     /// Parse a choice block.
-    pub fn parse(lines: &mut PeekableTokenLines) -> Result<Self, KConfigError> {
+    pub fn parse<C: Context>(
+        kconfig: &mut KConfig,
+        lines: &mut PeekableTokenLines,
+        base_dir: &Path,
+        parent_condition: Expr,
+        parent: Option<BlockId>,
+        context: &C,
+    ) -> Result<BlockId, KConfigError> {
         let Some(mut tokens) = lines.next() else {
             panic!("Expected choice block");
         };
@@ -44,12 +61,24 @@ impl Choice {
         let (blk_cmd, name) = tokens.read_cmd_sym(true)?;
         assert_eq!(blk_cmd.token, Token::Choice);
 
-        let mut prompt = None;
-        let mut help = None;
-        let mut configs = Vec::new();
-        let mut defaults = Vec::new();
         let mut last_loc = name.location();
-        let mut depends_on = Vec::new();
+
+        let choice = Self {
+            name,
+            prompt: None,
+            help: None,
+            configs: Vec::new(),
+            defaults: Vec::new(),
+            depends_on: parent_condition.clone(),
+            parent,
+        };
+
+        let block_id = kconfig.blocks.insert(Block::Choice(choice));
+        let mut prompt = None;
+        let mut configs = vec![];
+        let mut depends_on = parent_condition.clone();
+        let mut defaults = vec![];
+        let mut help = None;
 
         loop {
             let Some(tokens) = lines.peek() else {
@@ -69,7 +98,8 @@ impl Choice {
                 }
 
                 Token::Config => {
-                    let config = Config::parse(lines)?;
+                    let config =
+                        Config::parse(kconfig, lines, base_dir, parent_condition.clone(), Some(block_id), context)?;
                     configs.push(config);
                 }
 
@@ -81,8 +111,8 @@ impl Choice {
 
                 Token::Depends => {
                     let mut tokens = lines.next().unwrap();
-                    let depends = LocExpr::parse_depends_on(&mut tokens)?;
-                    depends_on.push(depends);
+                    let dependency = Expr::parse_depends_on(&mut tokens)?;
+                    depends_on = Expr::and(depends_on, dependency);
                 }
 
                 Token::Help => {
@@ -102,16 +132,26 @@ impl Choice {
             }
         }
 
-        let choice = Choice {
-            name,
-            prompt,
-            help,
-            configs,
-            defaults,
-            depends_on,
-        };
+        // Modify the fields we just read.
+        let choice = kconfig.blocks.get_mut(block_id).unwrap().as_choice_mut().unwrap();
+        choice.prompt = prompt;
+        choice.configs = configs;
+        choice.defaults = defaults;
+        choice.depends_on = depends_on;
+        choice.help = help;
 
-        Ok(choice)
+        Ok(block_id)
+    }
+
+    /// Return all of the symbols this choice depends on.
+    pub fn ref_symbols(&self) -> HashSet<String> {
+        let mut result = HashSet::default();
+        for default in self.defaults.iter() {
+            default.cond_symbols_into(&mut result);
+        }
+
+        self.depends_on.symbols_into(&mut result);
+        result
     }
 }
 
@@ -127,20 +167,25 @@ impl ChoiceDefault {
                 return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
             }
 
-            let cond = LocExpr::parse(if_token.location(), tokens)?;
+            let cond = Expr::parse(if_token.location(), tokens)?;
 
             if let Some(unexpected) = tokens.next() {
                 return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
             }
 
-            Some(cond)
+            cond
         } else {
-            None
+            Expr::Tristate(Tristate::True)
         };
 
         Ok(Self {
             target,
             condition,
         })
+    }
+
+    /// Return all of the symbols for the condition.
+    pub(crate) fn cond_symbols_into(&self, result: &mut HashSet<String>) {
+        self.condition.symbols_into(result)
     }
 }
