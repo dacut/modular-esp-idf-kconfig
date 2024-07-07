@@ -1,6 +1,6 @@
 use {
     crate::{
-        parser::{Block, BlockId, Choice, Config, ConfigDefault, Expr, ExprCmpOp, KConfig, Menu, Tristate},
+        parser::{Block, BlockId, Choice, Config, ConfigDefault, Expr, ExprCmpOp, KConfig, Tristate},
         Context,
     },
     log::*,
@@ -18,7 +18,7 @@ pub struct Simplifier<'a, 'b, C: Context> {
     #[allow(dead_code)]
     context: &'b C,
 
-    /// The dependency map for the KConfig.
+    /// The dependency map for the KConfig. This is used to keep track of dependencies still requiring resolution.
     dep_map: DepMap,
 
     /// Default values for each config, populated by resolve_block.
@@ -52,10 +52,12 @@ pub struct DepMap {
 }
 
 /// The type returned from [`Simplifier::choices()`].
-pub type ChoiceFilter<'a> = std::iter::FilterMap<slotmap::basic::Values<'a, BlockId, Block>, for<'b> fn(&'b Block) -> Option<&'b Choice>>;
+pub type ChoiceFilter<'a> =
+    std::iter::FilterMap<slotmap::basic::Values<'a, BlockId, Block>, for<'b> fn(&'b Block) -> Option<&'b Choice>>;
 
 /// The type returned from [`Simplifier::configs()`].
-pub type ConfigFilter<'a> = std::iter::FilterMap<slotmap::basic::Values<'a, BlockId, Block>, for<'b> fn(&'b Block) -> Option<&'b Config>>;
+pub type ConfigFilter<'a> =
+    std::iter::FilterMap<slotmap::basic::Values<'a, BlockId, Block>, for<'b> fn(&'b Block) -> Option<&'b Config>>;
 
 impl<'a, 'b, C: Context> Simplifier<'a, 'b, C> {
     /// Create a new Simplifier from the given KConfig and context.
@@ -93,7 +95,7 @@ impl<'a, 'b, C: Context> Simplifier<'a, 'b, C> {
     pub fn get_block(&self, id: BlockId) -> Option<&Block> {
         self.kconfig.blocks.get(id)
     }
-    
+
     /// Resolve a block, recursively resolving all blocks that depend solely on it.
     ///
     /// For each dependent block that depends on this block:
@@ -112,7 +114,6 @@ impl<'a, 'b, C: Context> Simplifier<'a, 'b, C> {
                 self.resolve_config_defaults(block_id, c);
                 self.resolve_config_selects(c);
             }
-            Block::Menu(m) => self.resolve_menu(block_id, m),
             Block::MenuConfig(c) => {
                 self.resolve_config_defaults(block_id, c);
                 self.resolve_config_selects(c);
@@ -135,6 +136,7 @@ impl<'a, 'b, C: Context> Simplifier<'a, 'b, C> {
 
         for default in config.defaults.iter() {
             let value = self.resolve_expr(&default.value);
+                info!("Resolving default condition for config {}: {:?}", config.name, default.condition);
             let condition = self.resolve_expr(&default.condition);
             defaults.push(ConfigDefault {
                 value,
@@ -143,8 +145,10 @@ impl<'a, 'b, C: Context> Simplifier<'a, 'b, C> {
         }
 
         let defaults = simplify_defaults(defaults);
-        let old = self.defaults.insert(block_id, defaults);
-        assert!(old.is_none());
+        if !defaults.is_empty() {
+            let old = self.defaults.insert(block_id, defaults);
+            assert!(old.is_none());
+        }
     }
 
     /// Propagate selects values to the dependent blocks.
@@ -171,11 +175,6 @@ impl<'a, 'b, C: Context> Simplifier<'a, 'b, C> {
         }
     }
 
-    /// Resolve a menu block.
-    fn resolve_menu(&mut self, _block_id: BlockId, _menu: &Menu) {
-        todo!()
-    }
-
     /// Resolve an expression.
     ///
     /// This requires that all of the symbols in the expression have been resolved already.
@@ -184,7 +183,12 @@ impl<'a, 'b, C: Context> Simplifier<'a, 'b, C> {
             // Static values.
             Expr::Tristate(_) | Expr::Hex(_) | Expr::Int(_) | Expr::String(_) => expr.clone(),
             Expr::Symbol(s) => {
-                if let Some(block_id) = self.kconfig.configs.get(s) {
+                debug!("Resolving symbol {s}");
+                if let Ok(value) = self.context.var(s) {
+                    // Symbol is defined in the context. Return that value.
+                    
+                    Expr::String(value)
+                } else if let Some(block_id) = self.kconfig.configs.get(s) {
                     // If this symbol is potentially visible, we can't simplify it further since it's user-configurable.
                     let visible_if = self.visible_if.get(*block_id);
                     if visible_if.is_none() || visible_if == Some(&Expr::Tristate(Tristate::True)) {
@@ -229,6 +233,7 @@ impl<'a, 'b, C: Context> Simplifier<'a, 'b, C> {
                     }
                 } else {
                     // Config does not exist and can never be set.
+                    warn!("Attempting to resolve unknown symbol {s}; using false");
                     Expr::Tristate(Tristate::False)
                 }
             }
@@ -459,5 +464,3 @@ impl DepMap {
         self.roots.remove(&dependent);
     }
 }
-
-

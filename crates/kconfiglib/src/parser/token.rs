@@ -74,14 +74,14 @@ pub enum Token {
     Or,
 }
 
-/// A token with location information.
+/// A token with optional location information.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocToken {
     /// The token.
     pub token: Token,
 
     /// The location of the token.
-    pub location: Location,
+    pub location: Option<Location>,
 }
 
 impl Token {
@@ -356,14 +356,15 @@ impl LocToken {
 }
 
 impl Located for LocToken {
-    fn location(&self) -> Location {
+    #[inline(always)]
+    fn location(&self) -> Option<Location> {
         self.location
     }
 }
 
 impl LocToken {
     /// Create a new located token.
-    pub fn new(token: Token, location: Location) -> Self {
+    pub fn new(token: Token, location: Option<Location>) -> Self {
         Self {
             token,
             location,
@@ -377,6 +378,7 @@ impl Display for LocToken {
     }
 }
 
+/// Return the next token from the input, expecting a keyword or symbol.
 pub(crate) fn parse_keyword_or_symbol(chars: &mut PeekableChars) -> Result<LocToken, KConfigError> {
     let start = chars.location();
     let mut ident = String::new();

@@ -46,14 +46,20 @@ pub(crate) const COMPONENT_KCONFIGS_SOURCE_FILE: &str = "COMPONENT_KCONFIGS_SOUR
 /// The string `"COMPONENT_KCONFIGS_PROJBUILD_SOURCE_FILE"`
 pub(crate) const COMPONENT_KCONFIGS_PROJBUILD_SOURCE_FILE: &str = "COMPONENT_KCONFIGS_PROJBUILD_SOURCE_FILE";
 
-/// The string `"IDF_PATH"`
-pub(crate) const IDF_PATH: &str = "IDF_PATH";
+/// The string `"IDF_CI_BUILD"`
+pub(crate) const IDF_CI_BUILD: &str = "IDF_CI_BUILD";
 
 /// The string `"IDF_ENV_FPGA"`
 pub(crate) const IDF_ENV_FPGA: &str = "IDF_ENV_FPGA";
 
-/// The string `"IDF_CI_BUILD"`
-pub(crate) const IDF_CI_BUILD: &str = "IDF_CI_BUILD";
+/// The string `"IDF_PATH"`
+pub(crate) const IDF_PATH: &str = "IDF_PATH";
+
+/// The string `"IDF_TOOLCHAIN"`
+pub(crate) const IDF_TOOLCHAIN: &str = "IDF_TOOLCHAIN";
+
+/// The string `"clang"`, for use with IDF_TOOLCHAIN.
+pub(crate) const IDF_TOOLCHAIN_CLANG: &str = "clang";
 
 fn main() -> IoResult<()> {
     env_logger::init();
@@ -61,7 +67,7 @@ fn main() -> IoResult<()> {
     let options = Options::parse();
 
     context.insert(IDF_PATH.to_string(), options.idf_path.clone());
-
+    context.insert(IDF_TOOLCHAIN.to_string(), IDF_TOOLCHAIN_CLANG.to_string());
     context.insert(
         COMPONENT_KCONFIGS_SOURCE_FILE.to_string(),
         if let Some(component_kconfig) = &options.component_kconfig {
@@ -70,7 +76,6 @@ fn main() -> IoResult<()> {
             format!("inline:{KCONFIGS_IN}")
         },
     );
-
     context.insert(
         COMPONENT_KCONFIGS_PROJBUILD_SOURCE_FILE.to_string(),
         if let Some(project_kconfig) = &options.project_kconfig {

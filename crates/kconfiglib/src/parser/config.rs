@@ -245,7 +245,7 @@ impl Config {
         // If there's an existing config with this name, replace it.
         if let Some(old_id) = kconfig.configs.get(config.name.as_ref()) {
             let old = kconfig.blocks.remove(*old_id).unwrap().into_config_or_menuconfig().unwrap();
-            warn!("Redefining config {} at {}; previous definition is at {}", config.name, config.name.location(), old.name.location());
+            warn!("Redefining config {} at {:?}; previous definition is at {:?}", config.name, config.name.location(), old.name.location());
         }
         
         let block = match blk_cmd.token {

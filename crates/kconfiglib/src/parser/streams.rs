@@ -159,8 +159,9 @@ impl<'buf> PeekableChars<'buf> {
 }
 
 impl Located for PeekableChars<'_> {
-    fn location(&self) -> Location {
-        self.location
+    #[inline(always)]
+    fn location(&self) -> Option<Location> {
+        Some(self.location)
     }
 }
 
@@ -286,16 +287,12 @@ impl<'buf> PeekableTokenLines<'buf> {
         }
     }
 
-    /// Return the location of the next token, or the last token read if no next token is available.
-    pub fn location(&self) -> Location {
+    /// Return the location of the next token, or None if the end of the stream is reached.
+    pub fn location(&self) -> Option<Location> {
         let mut offset = self.offset;
         if offset == self.base.len() {
             if offset == 0 {
-                return Location {
-                    filename: cache_path("<unknown>"),
-                    line: 1,
-                    column: 1,
-                };    
+                return None;
             }
             offset -= 1;
         }
@@ -306,11 +303,7 @@ impl<'buf> PeekableTokenLines<'buf> {
 
         let line = &self.base[offset];
         if line.is_empty() {
-            return Location {
-                filename: cache_path("<unknown>"),
-                line: 1,
-                column: 1,
-            };
+            return None;
         }
 
         line[line.len() - 1].location()

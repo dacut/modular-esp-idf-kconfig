@@ -23,51 +23,51 @@ pub struct KConfigError {
 
 impl KConfigError {
     /// Create a new [KConfigError] with the given kind. The backtrace will be captured automatically.
-    pub fn new(kind: KConfigErrorKind, location: Location) -> Self {
+    pub fn new(kind: KConfigErrorKind, location: Option<Location>) -> Self {
         Self {
             kind,
             backtrace: Backtrace::capture(),
-            location: Some(location),
+            location,
         }
     }
 
     /// Create a new [KConfigError] for an invalid environment variable.
-    pub fn invalid_env(var: impl ToString, location: Location) -> Self {
+    pub fn invalid_env(var: impl ToString, location: Option<Location>) -> Self {
         Self::new(KConfigErrorKind::InvalidEnv(var.to_string()), location)
     }
 
     /// Create a new [KConfigError] for an invalid integer literal.
-    pub fn invalid_integer(value: impl ToString, location: Location) -> Self {
+    pub fn invalid_integer(value: impl ToString, location: Option<Location>) -> Self {
         Self::new(KConfigErrorKind::InvalidInteger(value.to_string()), location)
     }
 
     /// Create a new [KConfigError] for an invalid Unicode codepoint.
-    pub fn invalid_unicode(codepoint: u32, location: Location) -> Self {
+    pub fn invalid_unicode(codepoint: u32, location: Option<Location>) -> Self {
         Self::new(KConfigErrorKind::InvalidUnicode(codepoint), location)
     }
 
     /// Create a new [KConfigError] for a missing token.
-    pub fn missing(expected: impl Into<Expected>, location: Location) -> Self {
+    pub fn missing(expected: impl Into<Expected>, location: Option<Location>) -> Self {
         Self::new(KConfigErrorKind::Missing(expected.into()), location)
     }
 
     /// Create a new [KConfigError] for a syntax error.
-    pub fn syntax(e: impl ToString, location: Location) -> Self {
+    pub fn syntax(e: impl ToString, location: Option<Location>) -> Self {
         Self::new(KConfigErrorKind::Syntax(e.to_string()), location)
     }
 
     /// Create a new [KConfigError] for an unexpected character or string.
-    pub fn unexpected(s: impl ToString, expected: impl Into<Expected>, location: Location) -> Self {
+    pub fn unexpected(s: impl ToString, expected: impl Into<Expected>, location: Option<Location>) -> Self {
         Self::new(KConfigErrorKind::Unexpected(s.to_string(), expected.into()), location)
     }
 
     /// Create a new [KConfigError] for an unexpected end-of-file.
-    pub fn unexpected_eof(expected: impl Into<Expected>, location: Location) -> Self {
+    pub fn unexpected_eof(expected: impl Into<Expected>, location: Option<Location>) -> Self {
         Self::new(KConfigErrorKind::UnexpectedEof(expected.into()), location)
     }
 
     /// Create a new [KConfigError] for an unknown environment variable.
-    pub fn unknown_env(var: impl ToString, location: Location) -> Self {
+    pub fn unknown_env(var: impl ToString, location: Option<Location>) -> Self {
         Self::new(KConfigErrorKind::UnknownEnv(var.to_string()), location)
     }
 }

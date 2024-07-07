@@ -102,7 +102,7 @@ impl Expr {
     }
 
     /// Parse an expression.
-    pub fn parse(prev: Location, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
+    pub fn parse(prev: Option<Location>, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
         let result = Self::parse_top(prev, tokens)?;
 
         if let Some(t) = tokens.peek() {
@@ -156,12 +156,12 @@ impl Expr {
 
     /// Parse the expression from a peekable token iterator.
     #[inline(always)]
-    fn parse_top(prev: Location, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
+    fn parse_top(prev: Option<Location>, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
         Self::parse_or(prev, tokens)
     }
 
     /// Parse an OR (`||`) expression, or return the underlying AND expression.
-    fn parse_or(prev: Location, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
+    fn parse_or(prev: Option<Location>, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
         let lhs = Self::parse_and(prev, tokens)?;
         let Some(op) = tokens.peek() else {
             return Ok(lhs);
@@ -177,7 +177,7 @@ impl Expr {
     }
 
     /// Parse an AND ('&&') expression, or return the underlying comparison expression.
-    fn parse_and(prev: Location, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
+    fn parse_and(prev: Option<Location>, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
         let lhs = Self::parse_comparison(prev, tokens)?;
         let Some(op) = tokens.peek() else {
             return Ok(lhs);
@@ -193,7 +193,7 @@ impl Expr {
     }
 
     /// Parse a comparison expression, or return the underlying unary-not expression.
-    fn parse_comparison(prev: Location, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
+    fn parse_comparison(prev: Option<Location>, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
         let lhs = Self::parse_unary_not(prev, tokens)?;
 
         let Some(op) = tokens.peek() else {
@@ -214,7 +214,7 @@ impl Expr {
     }
 
     /// Parse a unary not expression, or return the underlying terminal expression.
-    fn parse_unary_not(prev: Location, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
+    fn parse_unary_not(prev: Option<Location>, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
         let Some(token) = tokens.peek() else {
             return Err(KConfigError::missing(Expected::Expr, prev));
         };
@@ -229,7 +229,7 @@ impl Expr {
     }
 
     /// Parse a terminal or an expression in parentheses.
-    fn parse_terminal(prev: Location, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
+    fn parse_terminal(prev: Option<Location>, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
         let Some(token) = tokens.peek() else {
             return Err(KConfigError::missing(Expected::Expr, prev));
         };
@@ -248,7 +248,7 @@ impl Expr {
     }
 
     /// Parse an expression in parentheses.
-    fn parse_paren(prev: Location, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
+    fn parse_paren(prev: Option<Location>, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
         trace!("parse_paren: tokens={tokens:?}");
 
         let Some(lparen) = tokens.next() else {
@@ -388,16 +388,16 @@ mod tests {
     fn two_or_comparison() {
         let path = Path::new("test");
         let tokens = vec![
-            LocToken::new(Token::Symbol("FOO".to_string()), Location::new(path, 1, 1)),
-            LocToken::new(Token::Eq, Location::new(path, 1, 5)),
-            LocToken::new(Token::Symbol("BAR".to_string()), Location::new(path, 1, 7)),
-            LocToken::new(Token::Or, Location::new(path, 1, 11)),
-            LocToken::new(Token::Symbol("BAZ".to_string()), Location::new(path, 1, 13)),
-            LocToken::new(Token::Eq, Location::new(path, 1, 17)),
-            LocToken::new(Token::Symbol("QUX".to_string()), Location::new(path, 1, 19)),
+            LocToken::new(Token::Symbol("FOO".to_string()), None),
+            LocToken::new(Token::Eq, None),
+            LocToken::new(Token::Symbol("BAR".to_string()), None),
+            LocToken::new(Token::Or, None),
+            LocToken::new(Token::Symbol("BAZ".to_string()), None),
+            LocToken::new(Token::Eq, None),
+            LocToken::new(Token::Symbol("QUX".to_string()), None),
         ];
 
         let mut token_line = crate::parser::TokenLine::new(&tokens);
-        let _expr = Expr::parse(Location::new(path, 1, 1), &mut token_line).unwrap();
+        let _expr = Expr::parse(Some(Location::new(path, 1, 1)), &mut token_line).unwrap();
     }
 }

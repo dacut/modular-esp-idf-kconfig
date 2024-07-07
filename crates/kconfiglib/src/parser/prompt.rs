@@ -21,7 +21,7 @@ impl Prompt {
     }
 
     /// Parse the remainder of a prompt statement (everything after the `prompt` keyword or a type keyword).
-    pub fn parse(prev: Location, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
+    pub fn parse(prev: Option<Location>, tokens: &mut TokenLine) -> Result<Self, KConfigError> {
         let Some(title) = tokens.next() else {
             return Err(KConfigError::missing(Expected::StringLiteral, prev));
         };

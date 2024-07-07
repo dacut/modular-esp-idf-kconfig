@@ -95,8 +95,10 @@ impl Menu {
                 panic!("Expected menu entry");
             };
 
-            if cmd.location() == last_loc {
-                panic!("No progress made in Menu::parse at {last_loc}")
+            if let Some(last_loc_known) = last_loc {
+                if Some(last_loc_known) == cmd.location() {
+                    panic!("No progress made in Menu::parse at {last_loc_known}")
+                }
             }
 
             last_loc = cmd.location();

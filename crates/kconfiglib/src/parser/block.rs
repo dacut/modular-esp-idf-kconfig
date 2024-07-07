@@ -103,7 +103,7 @@ impl Block {
             _ => None,
         }
     }
-    
+
     /// If this is a config or menuconfig block, return a reference to the config; otherwise, return `None`.
     #[inline(always)]
     pub fn into_config_or_menuconfig(self) -> Option<Config> {
@@ -147,12 +147,12 @@ impl Block {
             };
 
             if let Some(pos) = last_pos {
-                if pos == cmd.location() {
+                if Some(pos) == cmd.location() {
                     panic!("No progress being made at {pos}");
                 }
             }
 
-            last_pos = Some(cmd.location());
+            last_pos = cmd.location();
 
             match cmd.token {
                 Token::Choice => {
@@ -276,7 +276,12 @@ impl Block {
         let relative = cmd.is_relative_source();
 
         let base_dir = if relative {
-            filename.location().filename.parent().unwrap_or_else(|| Path::new("/"))
+            filename
+                .location()
+                .expect("Location must be present for relative source")
+                .filename
+                .parent()
+                .unwrap_or_else(|| Path::new("/"))
         } else {
             base_dir
         }

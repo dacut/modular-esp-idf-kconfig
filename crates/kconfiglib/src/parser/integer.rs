@@ -1,5 +1,6 @@
 use crate::parser::{Expected, KConfigError, Located, PeekableChars, Token};
 
+/// Parse an integer or hex literal from the input.
 pub fn parse_int_hex_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     let start = chars.location();
 
@@ -20,6 +21,7 @@ pub fn parse_int_hex_literal(chars: &mut PeekableChars) -> Result<Token, KConfig
     }
 }
 
+/// Parse a decimal literal from the input.
 fn parse_dec_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     let mut literal = String::new();
     let start = chars.location();
@@ -52,6 +54,7 @@ fn parse_dec_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     Ok(Token::IntLit(value))
 }
 
+/// Parse a hex literal from the input.
 fn parse_hex_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     let mut literal = String::new();
     let start = chars.location();
@@ -93,6 +96,7 @@ fn parse_hex_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     Ok(Token::HexLit(value))
 }
 
+/// Parse a decimal or octal literal from the input.
 fn parse_dec_oct_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     let mut literal = String::new();
     let start = chars.location();

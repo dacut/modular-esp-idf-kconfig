@@ -24,24 +24,24 @@ pub struct Location {
     pub column: usize,
 }
 
-/// A trait for items with location information.
+/// A trait for items that might have location information.
 pub trait Located {
     /// Get the location of the item.
-    fn location(&self) -> Location;
+    fn location(&self) -> Option<Location>;
 }
 
-/// A [`String`] with location information.
+/// A [`String`] with optional location information.
 #[derive(Clone)]
 pub struct LocString {
     value: String,
-    location: Location,
+    location: Option<Location>,
 }
 
-/// A string slice ([`str`]) with location information.
+/// A string slice ([`str`]) with optional location information.
 #[derive(Clone, Copy)]
 pub struct LocStr<'sl> {
     value: &'sl str,
-    location: Location,
+    location: Option<Location>,
 }
 
 impl Location {
@@ -66,7 +66,7 @@ impl Display for Location {
 impl LocString {
     /// Create a new [`LocString`] from a [`String`] and a [`Location`].
     #[inline(always)]
-    pub fn new(value: String, location: Location) -> Self {
+    pub fn new(value: String, location: Option<Location>) -> Self {
         Self {
             value,
             location,
@@ -105,7 +105,7 @@ impl DerefMut for LocString {
 
 impl Located for LocString {
     #[inline(always)]
-    fn location(&self) -> Location {
+    fn location(&self) -> Option<Location> {
         self.location
     }
 }
@@ -170,7 +170,7 @@ impl PartialOrd<String> for LocString {
 impl<'sl> LocStr<'sl> {
     /// Create a new [`LocStr`] from a string slice and a [`Location`].
     #[inline(always)]
-    pub fn new(value: &'sl str, location: Location) -> Self {
+    pub fn new(value: &'sl str, location: Option<Location>) -> Self {
         Self {
             value,
             location,
@@ -200,7 +200,7 @@ impl Deref for LocStr<'_> {
 
 impl Located for LocStr<'_> {
     #[inline(always)]
-    fn location(&self) -> Location {
+    fn location(&self) -> Option<Location> {
         self.location
     }
 }
@@ -287,4 +287,25 @@ pub fn cache_path<P: Into<PathBuf>>(path: P) -> &'static Path {
 
     // Return the new entry.
     ptr
+}
+
+impl Located for &str {
+    #[inline(always)]
+    fn location(&self) -> Option<Location> {
+        None
+    }
+}
+
+impl Located for String {
+    #[inline(always)]
+    fn location(&self) -> Option<Location> {
+        None
+    }
+}
+
+impl Located for &String {
+    #[inline(always)]
+    fn location(&self) -> Option<Location> {
+        None
+    }
 }

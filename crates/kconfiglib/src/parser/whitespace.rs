@@ -1,5 +1,6 @@
 use crate::parser::{Expected, KConfigError, Located, PeekableChars};
 
+/// Parse 0 or more characters of horizontal whitespace, returning a string slice that was consumed.
 pub fn parse_hws0<'buf>(chars: &mut PeekableChars<'buf>) -> Result<&'buf str, KConfigError> {
     // Remember where we started.
     let start = chars.offset();
