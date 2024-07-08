@@ -1,4 +1,4 @@
-use crate::parser::{string_literal::parse_escape, Expected, KConfigError, Located, PeekableChars};
+use crate::parser::{string_literal::parse_escape, Expected, GetLocation, KConfigError, PeekableChars};
 
 /// Parse a comment from the stream.
 ///
@@ -6,11 +6,11 @@ use crate::parser::{string_literal::parse_escape, Expected, KConfigError, Locate
 /// will be consumed.
 pub fn parse_comment(chars: &mut PeekableChars) -> Result<(), KConfigError> {
     let Some(c) = chars.next() else {
-        return Err(KConfigError::unexpected_eof(Expected::Any, chars.location()));
+        return Err(KConfigError::unexpected_eof(Expected::Any, chars.get_location()));
     };
 
     if c != '#' {
-        return Err(KConfigError::unexpected(c, "#", chars.location()));
+        return Err(KConfigError::unexpected(c, "#", chars.get_location()));
     }
 
     // Eat the # character; don't include it in the comment.

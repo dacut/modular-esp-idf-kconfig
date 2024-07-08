@@ -1,7 +1,7 @@
 use {
     crate::{
         parser::{
-            Block, BlockId, Expected, Expr, KConfig, KConfigError, LocString, Located, PeekableTokenLines, Token,
+            Block, BlockId, Expected, Expr, GetLocation, KConfig, KConfigError, LocString, PeekableTokenLines, Token,
             Tristate,
         },
         Context,
@@ -58,15 +58,15 @@ impl Menu {
         assert_eq!(blk_cmd.token, Token::Menu);
 
         let Some(prompt) = tokens.next() else {
-            return Err(KConfigError::missing(Expected::StringLiteral, blk_cmd.location()));
+            return Err(KConfigError::missing(Expected::StringLiteral, blk_cmd.get_location()));
         };
 
         let Some(prompt) = prompt.string_literal_value() else {
-            return Err(KConfigError::unexpected(prompt, Expected::Symbol, prompt.location()));
+            return Err(KConfigError::unexpected(prompt, Expected::Symbol, prompt.get_location()));
         };
 
         if let Some(unexpected) = tokens.next() {
-            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
+            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.get_location()));
         }
 
         let mut visibility = Expr::Tristate(Tristate::True);
@@ -81,7 +81,7 @@ impl Menu {
         };
         let block_id = kconfig.blocks.insert(Block::Menu(menu));
 
-        let mut last_loc = prompt.location();
+        let mut last_loc = prompt.get_location();
         let mut items = Vec::new();
         let mut depends_on = Expr::Tristate(Tristate::True);
         let mut comments = Vec::new();
@@ -96,12 +96,12 @@ impl Menu {
             };
 
             if let Some(last_loc_known) = last_loc {
-                if Some(last_loc_known) == cmd.location() {
+                if Some(last_loc_known) == cmd.get_location() {
                     panic!("No progress made in Menu::parse at {last_loc_known}")
                 }
             }
 
-            last_loc = cmd.location();
+            last_loc = cmd.get_location();
 
             match cmd.token {
                 Token::EndMenu => {

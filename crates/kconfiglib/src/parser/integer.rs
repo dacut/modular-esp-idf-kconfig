@@ -1,8 +1,8 @@
-use crate::parser::{Expected, KConfigError, Located, PeekableChars, Token};
+use crate::parser::{Expected, GetLocation, KConfigError, PeekableChars, Token};
 
 /// Parse an integer or hex literal from the input.
 pub fn parse_int_hex_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
-    let start = chars.location();
+    let start = chars.get_location();
 
     let Some(c) = chars.peek() else {
         return Err(KConfigError::unexpected_eof(Expected::Any, start));
@@ -24,7 +24,7 @@ pub fn parse_int_hex_literal(chars: &mut PeekableChars) -> Result<Token, KConfig
 /// Parse a decimal literal from the input.
 fn parse_dec_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     let mut literal = String::new();
-    let start = chars.location();
+    let start = chars.get_location();
 
     let Some(c) = chars.peek() else {
         return Err(KConfigError::unexpected_eof(Expected::IntegerLiteral, start));
@@ -57,7 +57,7 @@ fn parse_dec_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
 /// Parse a hex literal from the input.
 fn parse_hex_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     let mut literal = String::new();
-    let start = chars.location();
+    let start = chars.get_location();
 
     let Some(c) = chars.next() else {
         return Err(KConfigError::unexpected_eof(Expected::IntegerLiteral, start));
@@ -99,7 +99,7 @@ fn parse_hex_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
 /// Parse a decimal or octal literal from the input.
 fn parse_dec_oct_literal(chars: &mut PeekableChars) -> Result<Token, KConfigError> {
     let mut literal = String::new();
-    let start = chars.location();
+    let start = chars.get_location();
 
     let Some(c) = chars.peek() else {
         return Err(KConfigError::unexpected_eof(Expected::IntegerLiteral, start));

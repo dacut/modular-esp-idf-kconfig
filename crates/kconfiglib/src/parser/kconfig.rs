@@ -143,7 +143,7 @@ mod tests {
                 panic!("Expected MenuConfig");
             };
 
-            assert_eq!(c.name.as_str(), "FOO");
+            assert_eq!(c.name.inner.as_str(), "FOO");
         }
     }
 
@@ -205,7 +205,7 @@ config BAZ
                 panic!("Expected Config");
             };
 
-            match c.name.as_str() {
+            match c.name.inner.as_str() {
                 "FOO" => {
                     foo_seen = true;
                     assert_eq!(c.defaults.len(), 1);
@@ -225,7 +225,7 @@ config BAZ
                     assert_eq!(c.defaults[0].value, Expr::Tristate(Tristate::True));
                 }
                 _ => {
-                    unreachable!("Unexpected config {}", c.name.as_str());
+                    unreachable!("Unexpected config {}", c.name.inner.as_str());
                 }
             }
         }

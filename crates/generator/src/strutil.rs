@@ -1,6 +1,5 @@
 use modular_esp_idf_kconfig_lib::Type;
 
-
 pub(crate) trait RustIdent {
     /// Return a Rust identifier from this object.
     fn rust_ident(self) -> String;
@@ -133,4 +132,3 @@ impl RustEnumVariant for &'_ str {
         }
     }
 }
-

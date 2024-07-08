@@ -1,5 +1,11 @@
-use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
-use std::ops::Not;
+use {
+    crate::KConfigError,
+    std::{
+        cmp::{Ord, Ordering, PartialOrd},
+        fmt::{Debug, Display, Formatter, Result as FmtResult},
+        ops::Not,
+    },
+};
 
 /// Literal value data.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +53,38 @@ pub enum Tristate {
     Maybe,
 }
 
+impl Tristate {
+    /// Convert a `Tristate` into an unsigned integer.
+    ///
+    /// This follows some esoteric Kconfig rules where:
+    /// * [`False`][Tristate::False] is `0`
+    /// * [`True`][Tristate::True] is `1`
+    /// * [`Maybe`][Tristate::Maybe] is `2`
+    #[inline(always)]
+    pub fn to_u64(self) -> u64 {
+        match self {
+            Tristate::False => 0,
+            Tristate::True => 1,
+            Tristate::Maybe => 2,
+        }
+    }
+
+    /// Convert a `Tristate` into an integer.
+    ///
+    /// This follows some esoteric Kconfig rules where:
+    /// * [`False`][Tristate::False] is `0`
+    /// * [`True`][Tristate::True] is `1`
+    /// * [`Maybe`][Tristate::Maybe] is `2`
+    #[inline(always)]
+    pub fn to_i64(self) -> i64 {
+        match self {
+            Tristate::False => 0,
+            Tristate::True => 1,
+            Tristate::Maybe => 2,
+        }
+    }
+}
+
 impl Display for Tristate {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
         match self {
@@ -64,6 +102,19 @@ impl From<bool> for Tristate {
             Self::True
         } else {
             Self::False
+        }
+    }
+}
+
+impl TryFrom<&str> for Tristate {
+    type Error = KConfigError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "n" => Ok(Tristate::False),
+            "y" => Ok(Tristate::True),
+            "m" => Ok(Tristate::Maybe),
+            _ => Err(KConfigError::invalid_tristate(value, None)),
         }
     }
 }
@@ -91,6 +142,20 @@ impl Not for Tristate {
             Tristate::True => Tristate::False,
             Tristate::Maybe => Tristate::Maybe,
         }
+    }
+}
+
+impl Ord for Tristate {
+    #[inline(always)]
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.to_u64().cmp(&other.to_u64())
+    }
+}
+
+impl PartialOrd for Tristate {
+    #[inline(always)]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 

@@ -1,7 +1,9 @@
 #[allow(unused_imports)]
 use {
     crate::{RustEnumVariant, RustIdent, RustType, Target},
-    modular_esp_idf_kconfig_lib::{Block, BlockId, Choice, Config, Context, Expr, KConfig, Located, Menu, Simplifier, Tristate},
+    modular_esp_idf_kconfig_lib::{
+        Block, BlockId, Choice, Config, Context, Expr, GetLocation, KConfig, Menu, Simplifier, Tristate,
+    },
     std::{
         collections::hash_map::Entry,
         collections::{HashMap, HashSet},
@@ -76,12 +78,12 @@ impl<'a, 'b, C: Context> Generator<'a, 'b, C> {
     where
         W: Write,
     {
-        let rust_type = choice.name.rust_type();
+        let rust_type = choice.name.as_ref().rust_type();
         writeln!(w)?;
         writeln!(w, "    /// {} (write_choice_field)", choice.name)?;
 
-        write_help(w, choice.help.as_ref(), "    ")?;
-        writeln!(w, "    pub {}: Option<{}>,", choice.name.rust_ident(), rust_type)?;
+        write_help(w, choice.help.as_ref().map(|s| s.as_ref().as_str()), "    ")?;
+        writeln!(w, "    pub {}: Option<{}>,", choice.name.as_ref().rust_ident(), rust_type)?;
 
         Ok(())
     }
@@ -91,16 +93,16 @@ impl<'a, 'b, C: Context> Generator<'a, 'b, C> {
     where
         W: Write,
     {
-        let rust_config_name = config.name.rust_ident();
+        let rust_config_name = config.name.as_ref().rust_ident();
         let config_type = config.r#type.rust_type();
 
         writeln!(w)?;
         writeln!(w, "    /// {} (write_config_field)", config.name)?;
 
         if let Some(help) = &config.help {
-            if !help.is_empty() {
+            if !help.inner.is_empty() {
                 writeln!(w, "    ///")?;
-                for line in help.trim().split('\n') {
+                for line in help.inner.trim().split('\n') {
                     writeln!(w, "    /// {}", line)?;
                 }
             }
@@ -151,11 +153,11 @@ impl<'a, 'b, C: Context> Generator<'a, 'b, C> {
     where
         W: Write,
     {
-        let rust_type = choice.name.rust_type();
+        let rust_type = choice.name.inner.rust_type();
         writeln!(w)?;
 
         writeln!(w, "/// {} (write_choice_enum)", choice.name)?;
-        write_help(w, choice.help.as_ref(), "")?;
+        write_help(w, choice.help.as_ref().map(|h| &h.inner), "")?;
         writeln!(w, "#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]")?;
         writeln!(w, "pub enum {rust_type} {{")?;
         for (i, config_id) in choice.configs.iter().enumerate() {
@@ -173,9 +175,9 @@ impl<'a, 'b, C: Context> Generator<'a, 'b, C> {
 
             writeln!(w, "    /// {}", config.name)?;
 
-            write_help(w, config.help.as_ref(), "    ")?;
+            write_help(w, config.help.as_ref().map(|h| &h.inner), "    ")?;
 
-            let rust_variant_name = config.name.rust_enum_variant(choice.name.as_ref());
+            let rust_variant_name = config.name.inner.rust_enum_variant(choice.name.as_ref());
             writeln!(w, "    {rust_variant_name},")?;
         }
 
@@ -193,7 +195,7 @@ impl<'a, 'b, C: Context> Generator<'a, 'b, C> {
                 panic!("Block {block_id:?} is not a config: {config_block:?}");
             };
 
-            let rust_variant_name = config.name.rust_enum_variant(choice.name.as_ref());
+            let rust_variant_name = config.name.inner.rust_enum_variant(choice.name.as_ref());
             writeln!(w, "            Self::{rust_variant_name} => write!(f, \"{}\"),", config.name)?;
         }
         writeln!(w, "        }}")?;
@@ -226,34 +228,47 @@ impl<'a, 'b, C: Context> Generator<'a, 'b, C> {
         Ok(())
     }
 
-    fn write_choice_accessor<W>(&self, w: &mut W, choice: &Choice) -> IoResult<()> where W: Write {
+    fn write_choice_accessor<W>(&self, w: &mut W, choice: &Choice) -> IoResult<()>
+    where
+        W: Write,
+    {
+        let rust_ident = choice.name.inner.rust_ident();
+        let rust_type = choice.name.inner.rust_type();
+
         writeln!(w)?;
         writeln!(w, "    /// Return the value of the {} choice, finding a default if it is not set.", choice.name)?;
-        writeln!(w, "    pub fn {}(&self) -> {} {{", choice.name.rust_ident(), choice.name.rust_type())?;
-        writeln!(w, "        if let Some(value) = self.{} {{", choice.name.rust_ident())?;
+        writeln!(w, "    pub fn {rust_ident}(&self) -> {rust_type} {{")?;
+        writeln!(w, "        if let Some(value) = self.{rust_ident} {{")?;
         writeln!(w, "            value")?;
 
         let n_defaults = choice.defaults.len();
         for (i, default) in choice.defaults.iter().enumerate() {
+            let enum_variant = default.target.inner.rust_enum_variant(choice.name.as_ref());
             if default.condition == Expr::Tristate(Tristate::True) || i == n_defaults - 1 {
                 writeln!(w, "        }} else {{")?;
-                writeln!(w, "            {}::{}", choice.name.rust_type(), default.target.rust_enum_variant(choice.name.as_ref()))?;
+                writeln!(w, "            {rust_type}::{enum_variant}")?;
                 break;
             }
 
             writeln!(w, "        }} else if {} {{", rustify_expr(&default.condition))?;
-            writeln!(w, "            {}::{}", choice.name.rust_type(), default.target.rust_enum_variant(choice.name.as_ref()))?;
+            writeln!(w, "            {rust_type}::{enum_variant}")?;
         }
         writeln!(w, "        }}")?;
         writeln!(w, "    }}")?;
         Ok(())
     }
 
-    fn write_config_accessor<W>(&self, w: &mut W, config: &Config) -> IoResult<()> where W: Write {
+    fn write_config_accessor<W>(&self, w: &mut W, config: &Config) -> IoResult<()>
+    where
+        W: Write,
+    {
+        let rust_ident = config.name.inner.rust_ident();
+        let rust_type = config.r#type.rust_type();
+
         writeln!(w)?;
         writeln!(w, "    /// Return the value of the {} config, finding a default if it is not set.", config.name)?;
-        writeln!(w, "    pub fn {}(&self) -> {} {{", config.name.rust_ident(), config.r#type.rust_type())?;
-        writeln!(w, "        if let Some(value) = self.{} {{", config.name.rust_ident())?;
+        writeln!(w, "    pub fn {rust_ident}(&self) -> {rust_type} {{")?;
+        writeln!(w, "        if let Some(value) = self.{rust_ident} {{")?;
         writeln!(w, "            value")?;
 
         for (i, default) in config.defaults.iter().enumerate() {
@@ -275,8 +290,9 @@ impl<'a, 'b, C: Context> Generator<'a, 'b, C> {
     where
         W: Write,
     {
+        let rust_ident = choice.name.inner.rust_ident();
         writeln!(w)?;
-        writeln!(w, "        if let Some(value) = self.{} {{", choice.name.rust_ident())?;
+        writeln!(w, "        if let Some(value) = self.{rust_ident} {{")?;
         writeln!(w, r##"            writeln!(w, "#define {{value}}")?;"##)?;
 
         if choice.defaults.is_empty() {
@@ -304,12 +320,13 @@ impl<'a, 'b, C: Context> Generator<'a, 'b, C> {
     where
         W: Write,
     {
+        let rust_ident = config.name.inner.rust_ident();
         writeln!(w)?;
-        writeln!(w, "        if let Some(value) = self.{} {{", config.name.rust_ident())?;
+        writeln!(w, "        if let Some(value) = self.{rust_ident} {{")?;
         writeln!(w, r##"            writeln!(w, "#define {{value}}")?;"##)?;
         for default in config.defaults.iter() {
             writeln!(w, "        }} else if {} {{", rustify_expr(&default.condition))?;
-            writeln!(w, r##"            writeln!(w, "#define {}")?;"##, config.name.rust_ident())?;
+            writeln!(w, r##"            writeln!(w, "#define {}")?;"##, config.name)?;
         }
         writeln!(w, "        }}")?;
         Ok(())

@@ -1,10 +1,11 @@
 use {
     crate::{
-        parser::{Expected, Located, Location, Token, TokenLine, Tristate},
+        parser::{Expected, GetLocation, Location, Token, TokenLine, Tristate},
         KConfigError,
     },
     log::trace,
     std::{
+        cmp::Ordering,
         collections::HashSet,
         fmt::{Display, Formatter, Result as FmtResult},
     },
@@ -107,7 +108,7 @@ impl Expr {
 
         if let Some(t) = tokens.peek() {
             if t.token != Token::If {
-                let loc = t.location();
+                let loc = t.get_location();
                 return Err(KConfigError::unexpected(&t.token, Expected::Eol, loc));
             }
         }
@@ -138,17 +139,17 @@ impl Expr {
 
         // prep_token ("preposition token") is either `if` or `on`.
         let Some(prep_token) = tokens.next() else {
-            return Err(KConfigError::missing(expected, cmd.location()));
+            return Err(KConfigError::missing(expected, cmd.get_location()));
         };
 
         if prep_token.token != preposition {
-            return Err(KConfigError::unexpected(prep_token, expected, prep_token.location()));
+            return Err(KConfigError::unexpected(prep_token, expected, prep_token.get_location()));
         }
 
-        let expr = Self::parse(prep_token.location(), tokens)?;
+        let expr = Self::parse(prep_token.get_location(), tokens)?;
 
         if let Some(unexpected) = tokens.next() {
-            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
+            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.get_location()));
         }
 
         Ok(expr)
@@ -172,7 +173,7 @@ impl Expr {
         }
 
         let op = tokens.next().unwrap();
-        let rhs = Self::parse_top(op.location(), tokens)?;
+        let rhs = Self::parse_top(op.get_location(), tokens)?;
         Ok(Self::Or(Box::new(lhs), Box::new(rhs)))
     }
 
@@ -188,7 +189,7 @@ impl Expr {
         }
 
         let op = tokens.next().unwrap();
-        let rhs = Self::parse_top(op.location(), tokens)?;
+        let rhs = Self::parse_top(op.get_location(), tokens)?;
         Ok(Self::And(lhs.into(), rhs.into()))
     }
 
@@ -207,7 +208,7 @@ impl Expr {
         let op = op.clone();
 
         _ = tokens.next();
-        let rhs = Self::parse_top(op.location(), tokens)?;
+        let rhs = Self::parse_top(op.get_location(), tokens)?;
         let cmp = op.token.try_into().unwrap();
 
         Ok(Self::Cmp(cmp, lhs.into(), rhs.into()))
@@ -240,7 +241,7 @@ impl Expr {
             Token::IntLit(i) => Expr::Int(*i),
             Token::StrLit(s) => Expr::String(s.clone()),
             Token::LParen => return Self::parse_paren(prev, tokens),
-            _ => return Err(KConfigError::unexpected(token, Expected::Expr, token.location())),
+            _ => return Err(KConfigError::unexpected(token, Expected::Expr, token.get_location())),
         };
 
         _ = tokens.next();
@@ -256,17 +257,17 @@ impl Expr {
         };
 
         if lparen.token != Token::LParen {
-            return Err(KConfigError::unexpected(&lparen.token, Expected::Expr, lparen.location()));
+            return Err(KConfigError::unexpected(&lparen.token, Expected::Expr, lparen.get_location()));
         }
 
-        let result = Self::parse_top(lparen.location(), tokens)?;
+        let result = Self::parse_top(lparen.get_location(), tokens)?;
 
         let Some(rparen) = tokens.next() else {
-            return Err(KConfigError::missing(Expected::RParen, lparen.location()));
+            return Err(KConfigError::missing(Expected::RParen, lparen.get_location()));
         };
 
         if rparen.token != Token::RParen {
-            return Err(KConfigError::unexpected(&rparen.token, Expected::RParen, rparen.location()));
+            return Err(KConfigError::unexpected(&rparen.token, Expected::RParen, rparen.get_location()));
         }
 
         Ok(result)
@@ -344,6 +345,21 @@ impl Display for Expr {
                 write!(f, "{lhs} && {rhs}")
             }
             Self::Or(lhs, rhs) => write!(f, "{lhs} || {rhs}"),
+        }
+    }
+}
+
+impl ExprCmpOp {
+    /// Compare two values according to this operator.
+    pub fn cmp<T: Ord>(&self, lhs: T, rhs: T) -> bool {
+        let ordering = lhs.cmp(&rhs);
+        match self {
+            Self::Eq => ordering == Ordering::Equal,
+            Self::Ne => ordering != Ordering::Equal,
+            Self::Lt => ordering == Ordering::Less,
+            Self::Le => ordering != Ordering::Greater,
+            Self::Gt => ordering == Ordering::Greater,
+            Self::Ge => ordering != Ordering::Less,
         }
     }
 }

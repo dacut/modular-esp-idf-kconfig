@@ -41,6 +41,11 @@ impl KConfigError {
         Self::new(KConfigErrorKind::InvalidInteger(value.to_string()), location)
     }
 
+    /// Create a new [KConfigError] for an invalid tristate value.
+    pub fn invalid_tristate(value: impl ToString, location: Option<Location>) -> Self {
+        Self::new(KConfigErrorKind::InvalidTristate(value.to_string()), location)
+    }
+
     /// Create a new [KConfigError] for an invalid Unicode codepoint.
     pub fn invalid_unicode(codepoint: u32, location: Option<Location>) -> Self {
         Self::new(KConfigErrorKind::InvalidUnicode(codepoint), location)
@@ -103,6 +108,9 @@ pub enum KConfigErrorKind {
     /// Invalid integer literal.
     InvalidInteger(String),
 
+    /// Invalid tristate value.
+    InvalidTristate(String),
+
     /// Invalid Unicode value.
     InvalidUnicode(u32),
 
@@ -133,6 +141,7 @@ impl Display for KConfigErrorKind {
         match self {
             Self::InvalidEnv(var) => write!(f, "Non-Unicode environment variable: {var}"),
             Self::InvalidInteger(value) => write!(f, "Invalid integer literal: {value}"),
+            Self::InvalidTristate(value) => write!(f, "Invalid tristate value: {value}"),
             Self::InvalidUnicode(value) => write!(f, "Invalid Unicode value: \\u{{{value:x}}}"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Missing(expected) => write!(f, "Missing {expected}"),

@@ -1,7 +1,7 @@
 use {
     crate::{
         parser::{
-            Block, BlockId, Config, Expected, Expr, KConfig, KConfigError, LocString, Located, PeekableTokenLines,
+            Block, BlockId, Config, Expected, Expr, GetLocation, KConfig, KConfigError, LocString, PeekableTokenLines,
             Prompt, Token, TokenLine, Tristate,
         },
         Context,
@@ -61,7 +61,7 @@ impl Choice {
         let (blk_cmd, name) = tokens.read_cmd_sym(true)?;
         assert_eq!(blk_cmd.token, Token::Choice);
 
-        let mut last_loc = name.location();
+        let mut last_loc = name.get_location();
 
         let choice = Self {
             name,
@@ -89,7 +89,7 @@ impl Choice {
                 panic!("Expected choice entry");
             };
 
-            last_loc = cmd.location();
+            last_loc = cmd.get_location();
 
             match cmd.token {
                 Token::EndChoice => {
@@ -125,7 +125,7 @@ impl Choice {
                 Token::Prompt | Token::Bool => {
                     let mut tokens = lines.next().unwrap();
                     let cmd = tokens.next().unwrap();
-                    prompt = Some(Prompt::parse(cmd.location(), &mut tokens)?);
+                    prompt = Some(Prompt::parse(cmd.get_location(), &mut tokens)?);
                 }
 
                 _ => unimplemented!("Choice entry not handled: {cmd:?}"),
@@ -164,13 +164,13 @@ impl ChoiceDefault {
 
         let condition = if let Some(if_token) = tokens.next() {
             if if_token.token != Token::If {
-                return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
+                return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.get_location()));
             }
 
-            let cond = Expr::parse(if_token.location(), tokens)?;
+            let cond = Expr::parse(if_token.get_location(), tokens)?;
 
             if let Some(unexpected) = tokens.next() {
-                return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
+                return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.get_location()));
             }
 
             cond

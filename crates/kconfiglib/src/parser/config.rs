@@ -1,8 +1,8 @@
 use {
     crate::{
         parser::{
-            Block, BlockId, Expected, Expr, KConfig, KConfigError, LitValue, LocString, Located, PeekableTokenLines,
-            Prompt, Token, TokenLine, Tristate, Type,
+            Block, BlockId, Expected, Expr, GetLocation, KConfig, KConfigError, LitValue, LocString,
+            PeekableTokenLines, Prompt, Token, TokenLine, Tristate, Type,
         },
         Context,
     },
@@ -162,7 +162,7 @@ impl Config {
                     r#type = Some(type_token.r#type().unwrap());
 
                     if !tokens.is_empty() {
-                        prompt = Some(Prompt::parse(type_token.location(), &mut tokens)?);
+                        prompt = Some(Prompt::parse(type_token.get_location(), &mut tokens)?);
                     }
                 }
 
@@ -190,7 +190,7 @@ impl Config {
                     let mut tokens = lines.next().unwrap();
                     _ = tokens.next();
                     assert!(tokens.peek().is_some());
-                    prompt = Some(Prompt::parse(cmd.location(), &mut tokens)?);
+                    prompt = Some(Prompt::parse(cmd.get_location(), &mut tokens)?);
                 }
 
                 Token::Help => {
@@ -245,9 +245,14 @@ impl Config {
         // If there's an existing config with this name, replace it.
         if let Some(old_id) = kconfig.configs.get(config.name.as_ref()) {
             let old = kconfig.blocks.remove(*old_id).unwrap().into_config_or_menuconfig().unwrap();
-            warn!("Redefining config {} at {:?}; previous definition is at {:?}", config.name, config.name.location(), old.name.location());
+            warn!(
+                "Redefining config {} at {:?}; previous definition is at {:?}",
+                config.name,
+                config.name.get_location(),
+                old.name.get_location()
+            );
         }
-        
+
         let block = match blk_cmd.token {
             Token::Config => Block::Config(config),
             Token::MenuConfig => Block::MenuConfig(config),
@@ -265,31 +270,31 @@ impl Config {
         };
 
         let Some(env_token) = tokens.next() else {
-            return Err(KConfigError::missing(Expected::Env, cmd.location()));
+            return Err(KConfigError::missing(Expected::Env, cmd.get_location()));
         };
 
         if env_token.token != Token::Env {
-            return Err(KConfigError::unexpected(env_token, Expected::Env, env_token.location()));
+            return Err(KConfigError::unexpected(env_token, Expected::Env, env_token.get_location()));
         }
 
         let Some(eq_token) = tokens.next() else {
-            return Err(KConfigError::missing(Expected::Eq, env_token.location()));
+            return Err(KConfigError::missing(Expected::Eq, env_token.get_location()));
         };
 
         if eq_token.token != Token::Eq {
-            return Err(KConfigError::unexpected(eq_token, Expected::Eq, eq_token.location()));
+            return Err(KConfigError::unexpected(eq_token, Expected::Eq, eq_token.get_location()));
         }
 
         let Some(env_name) = tokens.next() else {
-            return Err(KConfigError::missing(Expected::StringLiteral, eq_token.location()));
+            return Err(KConfigError::missing(Expected::StringLiteral, eq_token.get_location()));
         };
 
         let Some(env_name) = env_name.string_literal_value() else {
-            return Err(KConfigError::unexpected(env_name, Expected::StringLiteral, env_name.location()));
+            return Err(KConfigError::unexpected(env_name, Expected::StringLiteral, env_name.get_location()));
         };
 
         if let Some(unexpected) = tokens.next() {
-            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
+            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.get_location()));
         }
 
         Ok(env_name.to_loc_string())
@@ -303,17 +308,17 @@ impl ConfigDefault {
             panic!("Expected default command");
         };
 
-        let value = Expr::parse(default_cmd.location(), tokens)?;
+        let value = Expr::parse(default_cmd.get_location(), tokens)?;
 
         let condition = if let Some(if_token) = tokens.next() {
             if if_token.token != Token::If {
-                return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
+                return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.get_location()));
             }
 
-            let cond = Expr::parse(if_token.location(), tokens)?;
+            let cond = Expr::parse(if_token.get_location(), tokens)?;
 
             if let Some(unexpected) = tokens.next() {
-                return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
+                return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.get_location()));
             }
 
             cond
@@ -351,33 +356,33 @@ impl ConfigRange {
         };
 
         let Some(start) = tokens.next() else {
-            return Err(KConfigError::missing(Expected::LitValue, range_token.location()));
+            return Err(KConfigError::missing(Expected::LitValue, range_token.get_location()));
         };
 
         let Some(start) = start.literal_value() else {
-            return Err(KConfigError::unexpected(start, Expected::LitValue, start.location()));
+            return Err(KConfigError::unexpected(start, Expected::LitValue, start.get_location()));
         };
 
         let Some(end) = tokens.next() else {
-            return Err(KConfigError::missing(Expected::LitValue, range_token.location()));
+            return Err(KConfigError::missing(Expected::LitValue, range_token.get_location()));
         };
 
         let Some(end) = end.literal_value() else {
-            return Err(KConfigError::unexpected(end, Expected::LitValue, end.location()));
+            return Err(KConfigError::unexpected(end, Expected::LitValue, end.get_location()));
         };
 
         let condition = if let Some(if_token) = tokens.next() {
             if if_token.token != Token::If {
-                return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
+                return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.get_location()));
             }
 
-            Expr::parse(if_token.location(), tokens)?
+            Expr::parse(if_token.get_location(), tokens)?
         } else {
             Expr::Tristate(Tristate::True)
         };
 
         if let Some(unexpected) = tokens.next() {
-            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
+            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.get_location()));
         }
 
         Ok(Self {

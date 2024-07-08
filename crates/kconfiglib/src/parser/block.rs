@@ -2,8 +2,8 @@ use {
     crate::{
         context_closure,
         parser::{
-            cache_path, Choice, Config, Expected, Expr, KConfig, KConfigError, KConfigErrorKind, LocString, Located,
-            Menu, PeekableChars, PeekableTokenLines, Token,
+            cache_path, Choice, Config, Expected, Expr, GetLocation, KConfig, KConfigError, KConfigErrorKind,
+            LocString, Menu, PeekableChars, PeekableTokenLines, Token,
         },
         Context,
     },
@@ -147,12 +147,12 @@ impl Block {
             };
 
             if let Some(pos) = last_pos {
-                if Some(pos) == cmd.location() {
+                if Some(pos) == cmd.get_location() {
                     panic!("No progress being made at {pos}");
                 }
             }
 
-            last_pos = cmd.location();
+            last_pos = cmd.get_location();
 
             match cmd.token {
                 Token::Choice => {
@@ -233,10 +233,10 @@ impl Block {
         };
         assert!(matches!(if_token.token, Token::If));
 
-        let condition = Expr::and(parent_condition, Expr::parse(if_token.location(), &mut tokens)?);
+        let condition = Expr::and(parent_condition, Expr::parse(if_token.get_location(), &mut tokens)?);
 
         if let Some(unexpected) = tokens.next() {
-            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
+            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.get_location()));
         }
 
         let block_ids = Self::parse_blocks(kconfig, lines, base_dir, condition, parent, context)?;
@@ -250,7 +250,7 @@ impl Block {
         };
 
         if end_if.token != Token::EndIf {
-            return Err(KConfigError::unexpected(end_if, Expected::EndIf, end_if.location()));
+            return Err(KConfigError::unexpected(end_if, Expected::EndIf, end_if.get_location()));
         }
 
         Ok(block_ids)
@@ -277,7 +277,7 @@ impl Block {
 
         let base_dir = if relative {
             filename
-                .location()
+                .get_location()
                 .expect("Location must be present for relative source")
                 .filename
                 .parent()
@@ -288,12 +288,12 @@ impl Block {
         .to_path_buf();
 
         // Expand any ${ENV} variables in the filename.
-        let s_filename = match env_with_context(filename.as_str(), context_closure(context)) {
+        let s_filename = match env_with_context(filename.inner.as_str(), context_closure(context)) {
             Ok(s) => s,
             Err(e) => {
                 return Err(match e.cause {
-                    VarError::NotPresent => KConfigError::unknown_env(e.var_name, filename.location()),
-                    VarError::NotUnicode(_) => KConfigError::invalid_env(e.var_name, filename.location()),
+                    VarError::NotPresent => KConfigError::unknown_env(e.var_name, filename.get_location()),
+                    VarError::NotUnicode(_) => KConfigError::invalid_env(e.var_name, filename.get_location()),
                 })
             }
         };

@@ -1,8 +1,8 @@
 use {
     crate::parser::{
         cache_path, comment::parse_comment, integer::parse_int_hex_literal, string_literal::parse_string_literal,
-        token::parse_keyword_or_symbol, whitespace::parse_hws0, Expected, Expr, KConfigError, LocString, LocToken,
-        Located, Location, Token,
+        token::parse_keyword_or_symbol, whitespace::parse_hws0, Expected, Expr, GetLocation, KConfigError, LocString,
+        LocToken, Location, Token,
     },
     std::{iter::FusedIterator, ops::Deref, path::Path},
 };
@@ -18,7 +18,7 @@ use {
 pub struct PeekableChars<'buf> {
     base: &'buf str,
     offset: usize,
-    location: Location,
+    location: Option<Location>,
 }
 
 impl<'buf> PeekableChars<'buf> {
@@ -27,11 +27,11 @@ impl<'buf> PeekableChars<'buf> {
         Self {
             base,
             offset: 0,
-            location: Location {
+            location: Some(Location {
                 filename: cache_path(filename.to_owned()),
                 line: 1,
                 column: 1,
-            },
+            }),
         }
     }
 
@@ -124,11 +124,13 @@ impl<'buf> PeekableChars<'buf> {
                 panic!("{n} advances to {target}, which is not a char boundary");
             }
 
-            if c == '\n' {
-                self.location.line += 1;
-                self.location.column = 1;
-            } else {
-                self.location.column += 1;
+            if let Some(location) = &mut self.location {
+                if c == '\n' {
+                    location.line += 1;
+                    location.column = 1;
+                } else {
+                    location.column += 1;
+                }
             }
         }
 
@@ -146,11 +148,14 @@ impl<'buf> PeekableChars<'buf> {
             }
 
             self.offset += c.len_utf8();
-            if c == '\n' {
-                self.location.line += 1;
-                self.location.column = 1;
-            } else {
-                self.location.column += 1;
+
+            if let Some(location) = &mut self.location {
+                if c == '\n' {
+                    location.line += 1;
+                    location.column = 1;
+                } else {
+                    location.column += 1;
+                }
             }
         }
 
@@ -158,10 +163,10 @@ impl<'buf> PeekableChars<'buf> {
     }
 }
 
-impl Located for PeekableChars<'_> {
+impl GetLocation for PeekableChars<'_> {
     #[inline(always)]
-    fn location(&self) -> Option<Location> {
-        Some(self.location)
+    fn get_location(&self) -> Option<Location> {
+        self.location
     }
 }
 
@@ -173,6 +178,19 @@ impl<'buf> Deref for PeekableChars<'buf> {
     }
 }
 
+impl<'a> From<&'a str> for PeekableChars<'a> {
+    /// Create a new PeekableChars from a string slice without a filename.
+    /// This is used for testing.
+    #[inline(always)]
+    fn from(value: &'a str) -> Self {
+        Self {
+            base: value,
+            offset: 0,
+            location: None,
+        }
+    }
+}
+
 impl<'buf> Iterator for PeekableChars<'buf> {
     type Item = char;
 
@@ -180,13 +198,16 @@ impl<'buf> Iterator for PeekableChars<'buf> {
         match self.peek() {
             Some(c) => {
                 self.offset += c.len_utf8();
-                match c {
-                    '\n' => {
-                        self.location.line += 1;
-                        self.location.column = 1;
-                    }
-                    _ => {
-                        self.location.column += 1;
+
+                if let Some(location) = &mut self.location {
+                    match c {
+                        '\n' => {
+                            location.line += 1;
+                            location.column = 1;
+                        }
+                        _ => {
+                            location.column += 1;
+                        }
                     }
                 }
                 Some(c)
@@ -306,7 +327,7 @@ impl<'buf> PeekableTokenLines<'buf> {
             return None;
         }
 
-        line[line.len() - 1].location()
+        line[line.len() - 1].get_location()
     }
 }
 
@@ -413,16 +434,16 @@ impl<'buf> TokenLine<'buf> {
         };
 
         let Some(name) = self.next() else {
-            return Err(KConfigError::missing(Expected::Symbol, cmd.location()));
+            return Err(KConfigError::missing(Expected::Symbol, cmd.get_location()));
         };
 
         let Some(name) = name.symbol_value() else {
-            return Err(KConfigError::unexpected(name, Expected::Symbol, name.location()));
+            return Err(KConfigError::unexpected(name, Expected::Symbol, name.get_location()));
         };
 
         if require_eol {
             if let Some(unexpected) = self.next() {
-                return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
+                return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.get_location()));
             }
         }
 
@@ -436,16 +457,16 @@ impl<'buf> TokenLine<'buf> {
         let cmd = self.next().unwrap();
 
         let Some(str_lit) = self.next() else {
-            return Err(KConfigError::missing(Expected::StringLiteral, cmd.location()));
+            return Err(KConfigError::missing(Expected::StringLiteral, cmd.get_location()));
         };
 
         let Some(str_lit) = str_lit.string_literal_value() else {
-            return Err(KConfigError::unexpected(str_lit, Expected::StringLiteral, str_lit.location()));
+            return Err(KConfigError::unexpected(str_lit, Expected::StringLiteral, str_lit.get_location()));
         };
 
         if require_eol {
             if let Some(unexpected) = self.next() {
-                return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
+                return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.get_location()));
             }
         }
 
@@ -461,14 +482,14 @@ impl<'buf> TokenLine<'buf> {
         };
 
         if if_token.token != Token::If {
-            return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.location()));
+            return Err(KConfigError::unexpected(if_token, Expected::IfOrEol, if_token.get_location()));
         }
 
-        let expr = Expr::parse(if_token.location(), self)?;
+        let expr = Expr::parse(if_token.get_location(), self)?;
 
         if require_eof {
             if let Some(unexpected) = self.next() {
-                return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
+                return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.get_location()));
             }
         }
 
@@ -484,19 +505,19 @@ impl<'buf> TokenLine<'buf> {
         let cmd = self.next().unwrap();
 
         if cmd.token != Token::Help {
-            return Err(KConfigError::unexpected(cmd, Expected::Help, cmd.location()));
+            return Err(KConfigError::unexpected(cmd, Expected::Help, cmd.get_location()));
         }
 
         let Some(text) = self.next() else {
-            return Err(KConfigError::missing(Expected::StringLiteral, cmd.location()));
+            return Err(KConfigError::missing(Expected::StringLiteral, cmd.get_location()));
         };
 
         let Some(text) = text.string_literal_value() else {
-            return Err(KConfigError::unexpected(text, Expected::StringLiteral, text.location()));
+            return Err(KConfigError::unexpected(text, Expected::StringLiteral, text.get_location()));
         };
 
         if let Some(unexpected) = self.peek() {
-            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.location()));
+            return Err(KConfigError::unexpected(unexpected, Expected::Eol, unexpected.get_location()));
         };
 
         let text = text.to_loc_string();
@@ -567,7 +588,7 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<LocToken>, KConfigErr
                         continue 'outer;
                     } else if tokens.len() == 1 && tokens[0].token == Token::Help {
                         // This is a help block. Parse the help text and return it as a string literal.
-                        let start = chars.location();
+                        let start = chars.get_location();
                         tokens.push(LocToken::new(Token::StrLit(read_help_block(chars)?), start));
                         return Ok(tokens);
                     } else {
@@ -577,13 +598,13 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<LocToken>, KConfigErr
                 }
 
                 '"' | '\'' => {
-                    let start = chars.location();
+                    let start = chars.get_location();
                     let s = parse_string_literal(chars, c)?;
                     tokens.push(LocToken::new(Token::StrLit(s), start));
                 }
 
                 '+' | '-' | '0'..='9' => {
-                    let start = chars.location();
+                    let start = chars.get_location();
                     let tok = parse_int_hex_literal(chars)?;
                     tokens.push(LocToken::new(tok, start));
                 }
@@ -598,27 +619,27 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<LocToken>, KConfigErr
                 }
 
                 '&' if chars.starts_with("&&") => {
-                    let start = chars.location();
+                    let start = chars.get_location();
                     _ = chars.next();
                     _ = chars.next();
                     tokens.push(LocToken::new(Token::And, start));
                 }
 
                 '|' if chars.starts_with("||") => {
-                    let start = chars.location();
+                    let start = chars.get_location();
                     _ = chars.next();
                     _ = chars.next();
                     tokens.push(LocToken::new(Token::Or, start));
                 }
 
                 '=' => {
-                    let start = chars.location();
+                    let start = chars.get_location();
                     _ = chars.next();
                     tokens.push(LocToken::new(Token::Eq, start));
                 }
 
                 '!' => {
-                    let start = chars.location();
+                    let start = chars.get_location();
                     _ = chars.next();
                     let op = if chars.peek() == Some('=') {
                         _ = chars.next();
@@ -631,19 +652,19 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<LocToken>, KConfigErr
                 }
 
                 '(' => {
-                    let start = chars.location();
+                    let start = chars.get_location();
                     _ = chars.next();
                     tokens.push(LocToken::new(Token::LParen, start));
                 }
 
                 ')' => {
-                    let start = chars.location();
+                    let start = chars.get_location();
                     _ = chars.next();
                     tokens.push(LocToken::new(Token::RParen, start));
                 }
 
                 '<' => {
-                    let start = chars.location();
+                    let start = chars.get_location();
                     _ = chars.next();
                     let op = if chars.peek() == Some('=') {
                         _ = chars.next();
@@ -656,7 +677,7 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<LocToken>, KConfigErr
                 }
 
                 '>' => {
-                    let start = chars.location();
+                    let start = chars.get_location();
                     _ = chars.next();
                     let op = if chars.peek() == Some('=') {
                         _ = chars.next();
@@ -674,7 +695,7 @@ pub fn parse_line(chars: &mut PeekableChars) -> Result<Vec<LocToken>, KConfigErr
                     _ = chars.next();
                 }
 
-                _ => return Err(KConfigError::syntax(c, chars.location())),
+                _ => return Err(KConfigError::syntax(c, chars.get_location())),
             }
         }
     }
@@ -693,7 +714,7 @@ fn read_help_block(chars: &mut PeekableChars) -> Result<String, KConfigError> {
     let indent = parse_hws0(chars)?;
 
     if indent.is_empty() {
-        let start = chars.location();
+        let start = chars.get_location();
         let c = chars.peek().map(|c| c.to_string()).unwrap_or_else(|| "<EOF>".to_string());
         return Err(KConfigError::unexpected(c, Expected::Whitespace, start));
     }

@@ -1,7 +1,5 @@
 use {
-    crate::parser::{
-        Expected, KConfigError, LitValue, LocStr, Located, Location, PeekableChars, Tristate, Type,
-    },
+    crate::parser::{Expected, GetLocation, KConfigError, LitValue, LocStr, Location, PeekableChars, Tristate, Type},
     phf::phf_map,
     std::fmt::{Display, Formatter, Result as FmtResult},
 };
@@ -355,9 +353,9 @@ impl LocToken {
     }
 }
 
-impl Located for LocToken {
+impl GetLocation for LocToken {
     #[inline(always)]
-    fn location(&self) -> Option<Location> {
+    fn get_location(&self) -> Option<Location> {
         self.location
     }
 }
@@ -380,7 +378,7 @@ impl Display for LocToken {
 
 /// Return the next token from the input, expecting a keyword or symbol.
 pub(crate) fn parse_keyword_or_symbol(chars: &mut PeekableChars) -> Result<LocToken, KConfigError> {
-    let start = chars.location();
+    let start = chars.get_location();
     let mut ident = String::new();
     let Some(c) = chars.next() else {
         return Err(KConfigError::unexpected_eof(Expected::KeywordOrSymbol, start));

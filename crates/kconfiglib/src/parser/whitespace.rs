@@ -1,4 +1,4 @@
-use crate::parser::{Expected, KConfigError, Located, PeekableChars};
+use crate::parser::{Expected, GetLocation, KConfigError, PeekableChars};
 
 /// Parse 0 or more characters of horizontal whitespace, returning a string slice that was consumed.
 pub fn parse_hws0<'buf>(chars: &mut PeekableChars<'buf>) -> Result<&'buf str, KConfigError> {
@@ -9,7 +9,7 @@ pub fn parse_hws0<'buf>(chars: &mut PeekableChars<'buf>) -> Result<&'buf str, KC
         match chars.peek() {
             Some('\\') => {
                 let Some(c) = chars.peek_at(1) else {
-                    return Err(KConfigError::unexpected_eof(Expected::Any, chars.location()));
+                    return Err(KConfigError::unexpected_eof(Expected::Any, chars.get_location()));
                 };
 
                 if c.is_whitespace() {

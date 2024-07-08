@@ -5,7 +5,7 @@ use {
     },
     log::*,
     slotmap::SecondaryMap,
-    std::collections::HashSet,
+    std::{cmp::max, collections::HashSet},
 };
 
 /// An expression simplifier for KConfig expressions.
@@ -136,7 +136,7 @@ impl<'a, 'b, C: Context> Simplifier<'a, 'b, C> {
 
         for default in config.defaults.iter() {
             let value = self.resolve_expr(&default.value);
-                info!("Resolving default condition for config {}: {:?}", config.name, default.condition);
+            info!("Resolving default condition for config {}: {:?}", config.name, default.condition);
             let condition = self.resolve_expr(&default.condition);
             defaults.push(ConfigDefault {
                 value,
@@ -181,12 +181,12 @@ impl<'a, 'b, C: Context> Simplifier<'a, 'b, C> {
     pub fn resolve_expr(&self, expr: &Expr) -> Expr {
         match expr {
             // Static values.
-            Expr::Tristate(_) | Expr::Hex(_) | Expr::Int(_) | Expr::String(_) => expr.clone(),
+            Expr::Tristate(_) | Expr::Hex(_) | Expr::Int(_) => expr.clone(),
+            Expr::String(s) => self.resolve_string(s),
             Expr::Symbol(s) => {
-                debug!("Resolving symbol {s}");
                 if let Ok(value) = self.context.var(s) {
                     // Symbol is defined in the context. Return that value.
-                    
+                    // FIXME: Interpret the type of the symbol value.
                     Expr::String(value)
                 } else if let Some(block_id) = self.kconfig.configs.get(s) {
                     // If this symbol is potentially visible, we can't simplify it further since it's user-configurable.
@@ -259,64 +259,168 @@ impl<'a, 'b, C: Context> Simplifier<'a, 'b, C> {
         }
     }
 
+    /// Resolve a string expression, interpreting any variables in the form of `$(NAME)` from the supplied context.
+    fn resolve_string(&self, s: &str) -> Expr {
+        enum State {
+            Regular,
+            Backslash,
+            DollarSeen,
+            InHex,
+            InVar,
+        }
+
+        let mut result = String::with_capacity(s.len());
+        let mut state = State::Regular;
+        let mut hexdigits = String::with_capacity(2);
+        let mut var_name = String::with_capacity(max(s.len(), 3) - 3);
+
+        for c in s.chars() {
+            match state {
+                State::Regular => match c {
+                    '$' => state = State::DollarSeen,
+                    '\\' => state = State::Backslash,
+                    _ => result.push(c),
+                },
+                State::Backslash => match c {
+                    'a' => {
+                        result.push('\x07');
+                        state = State::Regular;
+                    }
+                    'n' => {
+                        result.push('\n');
+                        state = State::Regular;
+                    }
+                    'r' => {
+                        result.push('\r');
+                        state = State::Regular;
+                    }
+                    't' => {
+                        result.push('\t');
+                        state = State::Regular;
+                    }
+                    'b' => {
+                        result.push('\x08');
+                        state = State::Regular;
+                    }
+                    'x' => {
+                        hexdigits.clear();
+                        state = State::InHex;
+                    }
+                    _ => {
+                        result.push(c);
+                        state = State::Regular;
+                    }
+                },
+                State::DollarSeen => match c {
+                    '(' => {
+                        var_name.clear();
+                        state = State::InVar;
+                    }
+                    _ => {
+                        result.push('$');
+                        result.push(c);
+                        state = State::Regular;
+                    }
+                },
+                State::InHex => {
+                    if c.is_ascii_hexdigit() {
+                        hexdigits.push(c);
+                        if hexdigits.len() == 2 {
+                            let value = u8::from_str_radix(&hexdigits, 16).unwrap();
+                            result.push(value as char);
+                            state = State::Regular;
+                        }
+                    } else {
+                        result.push_str(&format!("\\x{}", hexdigits));
+                        state = State::Regular;
+                    }
+                }
+                State::InVar => {
+                    if c == ')' {
+                        if let Ok(value) = self.context.var(&var_name) {
+                            result.push_str(&value);
+                        } else {
+                            warn!("Unknown variable {var_name}");
+                        }
+                        state = State::Regular;
+                    } else {
+                        var_name.push(c);
+                    }
+                }
+            }
+        }
+
+        Expr::String(result)
+    }
+
     fn simplify_cmp(&self, op: ExprCmpOp, lhs: &Expr, rhs: &Expr) -> Expr {
         let lhs = self.resolve_expr(lhs);
         let rhs = self.resolve_expr(rhs);
 
         match lhs {
             Expr::Tristate(lhs_v) => match rhs {
-                Expr::Tristate(rhs_v) => match op {
-                    ExprCmpOp::Eq => Expr::Tristate((lhs_v == rhs_v).into()),
-                    ExprCmpOp::Ne => Expr::Tristate((lhs_v != rhs_v).into()),
-                    _ => panic!("Invalid comparison of tristate values: {op}"),
-                },
-                Expr::Hex(_) | Expr::Int(_) | Expr::String(_) => {
-                    panic!("Invalid comparison of tristate and non-tristate values: {lhs:?}, {rhs:?}")
-                }
+                Expr::Tristate(rhs_v) => Expr::Tristate(op.cmp(lhs_v, rhs_v).into()),
+                Expr::Hex(rhs_v) => Expr::Tristate(op.cmp(lhs_v.to_u64(), rhs_v).into()),
+                Expr::Int(rhs_v) => Expr::Tristate(op.cmp(lhs_v.to_i64(), rhs_v).into()),
+                Expr::String(rhs_v) => Expr::Tristate(op.cmp(lhs_v.to_i64(), coerce_string_int(&rhs_v)).into()),
                 _ => Expr::Cmp(op, lhs.into(), rhs.into()),
             },
             Expr::Int(lhs_v) => match rhs {
-                Expr::Int(rhs_v) => match op {
-                    ExprCmpOp::Eq => Expr::Tristate((lhs_v == rhs_v).into()),
-                    ExprCmpOp::Ne => Expr::Tristate((lhs_v != rhs_v).into()),
-                    ExprCmpOp::Lt => Expr::Tristate((lhs_v < rhs_v).into()),
-                    ExprCmpOp::Le => Expr::Tristate((lhs_v <= rhs_v).into()),
-                    ExprCmpOp::Gt => Expr::Tristate((lhs_v > rhs_v).into()),
-                    ExprCmpOp::Ge => Expr::Tristate((lhs_v >= rhs_v).into()),
-                },
-                Expr::Hex(_) | Expr::Tristate(_) | Expr::String(_) => {
-                    panic!("Invalid comparison of int and non-int values: {lhs:?}, {rhs:?}")
-                }
+                Expr::Int(rhs_v) => Expr::Tristate(op.cmp(lhs_v, rhs_v).into()),
+                Expr::Hex(rhs_v) => Expr::Tristate(op.cmp(lhs_v as u64, rhs_v).into()),
+                Expr::Tristate(rhs_v) => Expr::Tristate(op.cmp(lhs_v, rhs_v.to_i64()).into()),
+                Expr::String(rhs_v) => Expr::Tristate(op.cmp(lhs_v, coerce_string_int(&rhs_v)).into()),
                 _ => Expr::Cmp(op, lhs.into(), rhs.into()),
             },
             Expr::Hex(lhs_v) => match rhs {
-                Expr::Hex(rhs_v) => match op {
-                    ExprCmpOp::Eq => Expr::Tristate((lhs_v == rhs_v).into()),
-                    ExprCmpOp::Ne => Expr::Tristate((lhs_v != rhs_v).into()),
-                    ExprCmpOp::Lt => Expr::Tristate((lhs_v < rhs_v).into()),
-                    ExprCmpOp::Le => Expr::Tristate((lhs_v <= rhs_v).into()),
-                    ExprCmpOp::Gt => Expr::Tristate((lhs_v > rhs_v).into()),
-                    ExprCmpOp::Ge => Expr::Tristate((lhs_v >= rhs_v).into()),
-                },
-                Expr::Int(_) | Expr::Tristate(_) | Expr::String(_) => {
-                    panic!("Invalid comparison of hex and non-hex values: {lhs:?}, {rhs:?}")
-                }
+                Expr::Hex(rhs_v) => Expr::Tristate(op.cmp(lhs_v, rhs_v).into()),
+                Expr::Int(rhs_v) => Expr::Tristate(op.cmp(lhs_v, rhs_v as u64).into()),
+                Expr::Tristate(rhs_v) => Expr::Tristate(op.cmp(lhs_v, rhs_v.to_u64()).into()),
+                Expr::String(rhs_v) => Expr::Tristate(op.cmp(lhs_v, coerce_string_hex(&rhs_v)).into()),
                 _ => Expr::Cmp(op, lhs.into(), rhs.into()),
             },
             Expr::String(ref lhs_v) => match rhs {
-                Expr::String(ref rhs_v) => match op {
-                    ExprCmpOp::Eq => Expr::Tristate((lhs_v == rhs_v).into()),
-                    ExprCmpOp::Ne => Expr::Tristate((lhs_v != rhs_v).into()),
-                    _ => panic!("Invalid comparison of string values: {op}"),
-                },
-                Expr::Hex(_) | Expr::Int(_) | Expr::Tristate(_) => {
-                    panic!("Invalid comparison of string and non-string values: {lhs:?}, {rhs:?}")
-                }
+                Expr::String(ref rhs_v) => Expr::Tristate(op.cmp(lhs_v, rhs_v).into()),
+                Expr::Int(rhs_v) => Expr::Tristate(op.cmp(coerce_string_int(lhs_v), rhs_v).into()),
+                Expr::Hex(rhs_v) => Expr::Tristate(op.cmp(coerce_string_hex(lhs_v), rhs_v).into()),
+                Expr::Tristate(rhs_v) => Expr::Tristate(op.cmp(coerce_string_int(lhs_v), rhs_v.to_i64()).into()),
                 _ => Expr::Cmp(op, lhs.into(), rhs.into()),
             },
             _ => Expr::Cmp(op, lhs.into(), rhs.into()),
         }
     }
+}
+
+macro_rules! coerce_string_numeric_impl {
+    ($value:expr, $ty:ty) => {
+        match $value {
+            "n" => 0,
+            "y" => 1,
+            "m" => 2,
+            v if v.starts_with("0x") || v.starts_with("0X") => {
+                let Ok(value) = <$ty>::from_str_radix(&v[2..], 16) else {
+                    panic!("Failed to coerce string to integer: {v:?}")
+                };
+                value
+            }
+            v => {
+                let Ok(value) = v.parse() else {
+                    panic!("Failed to coerce string to integer: {v:?}")
+                };
+                value
+            }
+        }
+    };
+}
+
+/// Attempt to coerce a string to a hex value.
+fn coerce_string_hex(s: &str) -> u64 {
+    coerce_string_numeric_impl!(s, u64)
+}
+
+/// Attempt to coerce a string to an integer value.
+fn coerce_string_int(s: &str) -> i64 {
+    coerce_string_numeric_impl!(s, i64)
 }
 
 /// Collapse adjacent defaults with the same value.
@@ -462,5 +566,31 @@ impl DepMap {
 
         // Always remove the dependent from the roots if it was there.
         self.roots.remove(&dependent);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        crate::{Expr, KConfig, PeekableChars, Simplifier},
+        std::{collections::HashMap, path::PathBuf},
+    };
+
+    #[test_log::test]
+    fn test_string_lookup() {
+        let mut context = HashMap::default();
+        context.insert("IDF_CI_BUILD".to_string(), "n".to_string());
+        let config = r##"
+            config FOO
+                string "Foo"
+                default "$(IDF_CI_BUILD)"
+        "##;
+        let config = PeekableChars::from(config);
+
+        let base_dir = PathBuf::from("/tmp");
+        let kconfig = KConfig::from_str(config, &base_dir, &context).unwrap();
+        let simplifier = Simplifier::new(&kconfig, &context);
+        let result = simplifier.resolve_string("$(IDF_CI_BUILD)");
+        assert_eq!(result, Expr::String("n".to_string()));
     }
 }
